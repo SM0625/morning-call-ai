@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI 모닝콜</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
+    * { font-family: 'Noto Sans KR', sans-serif; }
+
+    @keyframes pulse-ring {
+      0% { transform: scale(1); opacity: 0.8; }
+      100% { transform: scale(2.2); opacity: 0; }
+    }
+    @keyframes bell {
+      0%,100% { transform: rotate(-12deg); }
+      50% { transform: rotate(12deg); }
+    }
+    @keyframes float {
+      0%,100% { transform: translateY(0px); }
+      50% { transform: translateY(-8px); }
+    }
+    @keyframes wave {
+      0%,100% { transform: scaleY(0.4); }
+      50% { transform: scaleY(1); }
+    }
+    @keyframes glow {
+      0%,100% { box-shadow: 0 0 20px #6366f1; }
+      50% { box-shadow: 0 0 40px #818cf8, 0 0 60px #6366f1; }
+    }
+
+    .ring-anim { animation: bell 0.35s ease-in-out infinite; }
+    .float-anim { animation: float 3s ease-in-out infinite; }
+    .glow-anim { animation: glow 2s ease-in-out infinite; }
+
+    .pulse-ring-1 { animation: pulse-ring 1.8s ease-out infinite; }
+    .pulse-ring-2 { animation: pulse-ring 1.8s ease-out 0.6s infinite; }
+    .pulse-ring-3 { animation: pulse-ring 1.8s ease-out 1.2s infinite; }
+
+    .wave-bar { animation: wave 1s ease-in-out infinite; }
+    .wave-bar:nth-child(2) { animation-delay: 0.15s; }
+    .wave-bar:nth-child(3) { animation-delay: 0.3s; }
+    .wave-bar:nth-child(4) { animation-delay: 0.45s; }
+    .wave-bar:nth-child(5) { animation-delay: 0.6s; }
+
+    .hidden { display: none !important; }
+    .chat-scroll { scrollbar-width: thin; scrollbar-color: #4f46e5 #1e1b4b; }
+    .chat-scroll::-webkit-scrollbar { width: 4px; }
+    .chat-scroll::-webkit-scrollbar-thumb { background: #4f46e5; border-radius: 4px; }
+
+    input[type="time"]::-webkit-calendar-picker-indicator { filter: invert(1); }
+  </style>
+</head>
+<body class="bg-gray-950 text-white min-h-screen">
+
+<!-- ===== VIEW: SETUP ===== -->
+<div id="view-setup" class="min-h-screen flex items-center justify-center p-4">
+  <div class="w-full max-w-md">
+    <!-- Logo -->
+    <div class="text-center mb-8">
+      <div class="text-5xl mb-3">🌅</div>
+      <h1 class="text-3xl font-bold text-indigo-400">AI 모닝콜</h1>
+      <p class="text-gray-400 mt-1 text-sm">대화로 자연스럽게 깨어나는 아침</p>
+    </div>
+
+    <div class="bg-gray-900 rounded-2xl p-6 space-y-5 border border-gray-800">
+      <!-- Ollama notice -->
+      <div class="flex items-start gap-3 bg-indigo-950/60 border border-indigo-800/50 rounded-xl px-4 py-3">
+        <span class="text-lg mt-0.5">🦙</span>
+        <div>
+          <div class="text-xs font-semibold text-indigo-300 mb-0.5">Ollama 로컬 AI 사용 중 (무료)</div>
+          <div class="text-xs text-gray-400">API 키 불필요 · 인터넷 연결 불필요 · 완전 무료</div>
+        </div>
+      </div>
+
+      <!-- Model selector -->
+      <div>
+        <label class="block text-xs font-medium text-gray-400 mb-1.5">AI 모델</label>
+        <select id="inp-model"
+          class="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 transition text-white">
+          <option value="llama3.2">llama3.2 (권장 · 2GB)</option>
+          <option value="gemma3:4b">gemma3:4b (고품질 · 3GB)</option>
+          <option value="phi4-mini">phi4-mini (빠름 · 2.5GB)</option>
+          <option value="qwen2.5:3b">qwen2.5:3b (한국어 우수 · 2GB)</option>
+        </select>
+        <p class="text-xs text-gray-600 mt-1">모델이 없으면 터미널에서: <span class="text-indigo-400 font-mono">ollama pull llama3.2</span></p>
+      </div>
+
+      <!-- Name -->
+      <div>
+        <label class="block text-xs font-medium text-gray-400 mb-1.5">이름</label>
+        <input id="inp-name" type="text" placeholder="홍길동" value=""
+          class="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 transition"/>
+      </div>
+
+      <!-- Schedule -->
+      <div>
+        <label class="block text-xs font-medium text-gray-400 mb-1.5">오늘 일정 <span class="text-gray-600">(선택)</span></label>
+        <textarea id="inp-schedule" rows="2" placeholder="예: 오전 10시 팀 미팅, 오후 2시 발표 준비"
+          class="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 resize-none transition"></textarea>
+      </div>
+
+      <!-- Alarm Time -->
+      <div>
+        <label class="block text-xs font-medium text-gray-400 mb-1.5">알람 시간</label>
+        <input id="inp-time" type="time" value="07:30"
+          class="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 transition text-white"/>
+      </div>
+
+      <!-- Error -->
+      <div id="setup-error" class="hidden text-red-400 text-sm bg-red-900/30 rounded-xl px-4 py-3"></div>
+
+      <!-- Submit -->
+      <button onclick="startAlarm()"
+        class="w-full bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white font-semibold py-3.5 rounded-xl transition text-sm">
+        알람 설정하기 →
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== VIEW: STANDBY ===== -->
+<div id="view-standby" class="hidden min-h-screen flex flex-col items-center justify-center p-4">
+  <!-- Big Clock -->
+  <div class="text-center mb-10">
+    <div id="clock-display" class="text-7xl font-thin tracking-widest text-white mb-2">00:00</div>
+    <div id="date-display" class="text-gray-400 text-sm"></div>
+  </div>
+
+  <!-- Countdown Card -->
+  <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6 w-full max-w-sm mb-6 text-center">
+    <div class="text-indigo-400 text-xs font-medium uppercase tracking-wider mb-2">알람까지</div>
+    <div id="countdown-display" class="text-3xl font-bold text-white mb-4">--:--:--</div>
+    <div class="text-sm text-gray-400">⏰ <span id="alarm-time-display">-</span></div>
+  </div>
+
+  <!-- Info Card -->
+  <div class="bg-gray-900 border border-gray-800 rounded-2xl p-4 w-full max-w-sm mb-6 space-y-2">
+    <div class="flex items-center gap-3 text-sm">
+      <span class="text-indigo-400 w-5">👤</span>
+      <span class="text-gray-300" id="sb-name">-</span>
+    </div>
+    <div class="flex items-start gap-3 text-sm">
+      <span class="text-indigo-400 w-5 mt-0.5">📋</span>
+      <span class="text-gray-300" id="sb-schedule">일정 없음</span>
+    </div>
+    <div class="flex items-center gap-3 text-sm">
+      <span class="text-indigo-400 w-5">🌤</span>
+      <span class="text-gray-300" id="sb-weather">날씨 불러오는 중...</span>
+    </div>
+  </div>
+
+  <!-- Buttons -->
+  <div class="flex gap-3 w-full max-w-sm">
+    <button onclick="showView('setup')"
+      class="flex-1 bg-gray-800 hover:bg-gray-700 py-3 rounded-xl text-sm transition">
+      ← 설정 변경
+    </button>
+    <button onclick="triggerAlarm()"
+      class="flex-1 bg-indigo-600 hover:bg-indigo-500 py-3 rounded-xl text-sm font-semibold transition">
+      지금 테스트 ▶
+    </button>
+  </div>
+</div>
+
+<!-- ===== VIEW: RINGING ===== -->
+<div id="view-ringing" class="hidden min-h-screen flex flex-col items-center justify-center p-4 bg-gray-950">
+  <div class="text-center">
+    <!-- Pulse Rings -->
+    <div class="relative flex items-center justify-center mb-10" style="height:180px">
+      <div class="absolute w-36 h-36 rounded-full bg-indigo-600/20 pulse-ring-1"></div>
+      <div class="absolute w-36 h-36 rounded-full bg-indigo-600/20 pulse-ring-2"></div>
+      <div class="absolute w-36 h-36 rounded-full bg-indigo-600/20 pulse-ring-3"></div>
+      <div class="relative w-28 h-28 rounded-full bg-indigo-600 flex items-center justify-center ring-anim shadow-2xl">
+        <span class="text-5xl">🤖</span>
+      </div>
+    </div>
+
+    <div class="text-gray-400 text-sm mb-2">전화 오는 중...</div>
+    <div class="text-2xl font-bold mb-1">AI 모닝콜 비서</div>
+    <div class="text-gray-400 text-sm mb-12">알람 시간이 됐어요!</div>
+
+    <!-- Accept / Decline -->
+    <div class="flex gap-12 justify-center">
+      <div class="text-center">
+        <button onclick="declineCall()"
+          class="w-16 h-16 rounded-full bg-red-500 hover:bg-red-400 flex items-center justify-center text-2xl transition shadow-lg mx-auto mb-2">
+          📵
+        </button>
+        <div class="text-xs text-gray-500">거절</div>
+      </div>
+      <div class="text-center">
+        <button onclick="acceptCall()"
+          class="w-16 h-16 rounded-full bg-green-500 hover:bg-green-400 flex items-center justify-center text-2xl transition shadow-lg mx-auto mb-2">
+          📞
+        </button>
+        <div class="text-xs text-gray-500">받기</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== VIEW: CALL ===== -->
+<div id="view-call" class="hidden min-h-screen flex flex-col bg-gray-950">
+  <!-- Header -->
+  <div class="flex items-center gap-4 p-5 border-b border-gray-800">
+    <div class="w-12 h-12 rounded-full bg-indigo-600 flex items-center justify-center text-xl glow-anim flex-shrink-0">🤖</div>
+    <div class="flex-1 min-w-0">
+      <div class="font-semibold">AI 모닝콜 비서</div>
+      <div class="text-green-400 text-xs">통화 중 · <span id="call-timer">00:00</span></div>
+    </div>
+    <!-- Level indicator -->
+    <div class="flex gap-1">
+      <div id="lvl-0" class="w-2 h-2 rounded-full bg-indigo-600"></div>
+      <div id="lvl-1" class="w-2 h-2 rounded-full bg-gray-700"></div>
+      <div id="lvl-2" class="w-2 h-2 rounded-full bg-gray-700"></div>
+      <div id="lvl-3" class="w-2 h-2 rounded-full bg-gray-700"></div>
+    </div>
+  </div>
+
+  <!-- Conversation -->
+  <div id="chat-messages" class="flex-1 overflow-y-auto p-4 space-y-3 chat-scroll">
+    <!-- Messages injected by JS -->
+  </div>
+
+  <!-- Status indicator -->
+  <div id="status-area" class="px-4 py-2">
+    <div id="status-thinking" class="hidden items-center gap-2 text-indigo-400 text-sm">
+      <div class="flex gap-1">
+        <div class="wave-bar w-1 h-4 bg-indigo-400 rounded-full"></div>
+        <div class="wave-bar w-1 h-4 bg-indigo-400 rounded-full"></div>
+        <div class="wave-bar w-1 h-4 bg-indigo-400 rounded-full"></div>
+        <div class="wave-bar w-1 h-4 bg-indigo-400 rounded-full"></div>
+        <div class="wave-bar w-1 h-4 bg-indigo-400 rounded-full"></div>
+      </div>
+      <span>AI가 응답 중...</span>
+    </div>
+    <div id="status-listening" class="hidden items-center gap-2 text-green-400 text-sm">
+      <div class="w-2.5 h-2.5 rounded-full bg-green-400 animate-pulse"></div>
+      <span>듣는 중... 말씀해주세요</span>
+    </div>
+    <div id="status-speaking" class="hidden items-center gap-2 text-blue-400 text-sm">
+      <div class="flex gap-1">
+        <div class="wave-bar w-1 h-4 bg-blue-400 rounded-full"></div>
+        <div class="wave-bar w-1 h-4 bg-blue-400 rounded-full"></div>
+        <div class="wave-bar w-1 h-4 bg-blue-400 rounded-full"></div>
+        <div class="wave-bar w-1 h-4 bg-blue-400 rounded-full"></div>
+        <div class="wave-bar w-1 h-4 bg-blue-400 rounded-full"></div>
+      </div>
+      <span>AI가 말하는 중...</span>
+    </div>
+  </div>
+
+  <!-- Text input fallback -->
+  <div class="px-4 pb-2">
+    <div id="text-input-area" class="hidden flex gap-2">
+      <input id="text-input" type="text" placeholder="말하기 대신 입력하세요..."
+        class="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-indigo-500 transition"
+        onkeydown="if(event.key==='Enter') sendTextMessage()"/>
+      <button onclick="sendTextMessage()"
+        class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2.5 rounded-xl text-sm transition">전송</button>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <div class="p-4 border-t border-gray-800 flex gap-3">
+    <!-- Mic button -->
+    <button id="btn-mic" onclick="toggleMic()"
+      class="flex-1 flex items-center justify-center gap-2 bg-gray-800 hover:bg-gray-700 py-3.5 rounded-xl text-sm transition">
+      <span id="mic-icon">🎤</span>
+      <span id="mic-label">음성 입력</span>
+    </button>
+
+    <!-- Toggle text input -->
+    <button onclick="toggleTextInput()"
+      class="bg-gray-800 hover:bg-gray-700 px-4 py-3.5 rounded-xl text-sm transition" title="텍스트 입력">
+      ⌨️
+    </button>
+
+    <!-- End call (disabled until alarm can end) -->
+    <button id="btn-end-call" onclick="endCall()" disabled
+      class="flex-1 flex items-center justify-center gap-2 bg-gray-800 text-gray-600 py-3.5 rounded-xl text-sm transition cursor-not-allowed"
+      title="아직 통화를 끊을 수 없어요">
+      <span>📵</span>
+      <span>통화 종료</span>
+    </button>
+  </div>
+</div>
+
+<!-- ===== VIEW: DONE ===== -->
+<div id="view-done" class="hidden min-h-screen flex flex-col items-center justify-center p-4 text-center">
+  <div class="text-6xl mb-6 float-anim">☀️</div>
+  <h2 class="text-2xl font-bold mb-2">좋은 하루 되세요!</h2>
+  <p class="text-gray-400 mb-2">기상 완료</p>
+  <p id="done-time" class="text-indigo-400 font-semibold text-lg mb-10"></p>
+  <button onclick="resetApp()"
+    class="bg-indigo-600 hover:bg-indigo-500 px-8 py-3 rounded-xl font-semibold transition">
+    새 알람 설정하기
+  </button>
+</div>
+
+<script>
+// ─── State ────────────────────────────────────────────────────────────────────
+const S = {
+  model: 'llama3.2', userName: '', schedule: '', alarmTime: '',
+  weatherInfo: '', conversationHistory: [],
+  conversationLevel: 0, alarmCanEnd: false,
+  recognition: null, isSpeaking: false, isListening: false,
+  callStartTime: null, callTimerInterval: null,
+  alarmCheckInterval: null, clockInterval: null,
+  ringInterval: null, audioCtx: null,
+};
+
+// ─── Utility ──────────────────────────────────────────────────────────────────
+function showView(name) {
+  ['setup','standby','ringing','call','done'].forEach(v => {
+    document.getElementById(`view-${v}`).classList.add('hidden');
+  });
+  document.getElementById(`view-${name}`).classList.remove('hidden');
+}
+
+function showStatus(type) {
+  ['thinking','listening','speaking'].forEach(t => {
+    const el = document.getElementById(`status-${t}`);
+    el.style.display = t === type ? 'flex' : 'none';
+  });
+}
+
+function hideStatus() {
+  ['thinking','listening','speaking'].forEach(t => {
+    document.getElementById(`status-${t}`).style.display = 'none';
+  });
+}
+
+function scrollChat() {
+  const el = document.getElementById('chat-messages');
+  el.scrollTop = el.scrollHeight;
+}
+
+function addMessage(role, text) {
+  const el = document.getElementById('chat-messages');
+  const isAI = role === 'assistant';
+  const div = document.createElement('div');
+  div.className = `flex ${isAI ? 'justify-start' : 'justify-end'}`;
+  div.innerHTML = `
+    <div class="max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed
+      ${isAI
+        ? 'bg-indigo-900/60 text-indigo-100 rounded-tl-sm'
+        : 'bg-gray-700 text-white rounded-tr-sm'}">
+      ${text.replace(/\n/g, '<br>')}
+    </div>`;
+  el.appendChild(div);
+  scrollChat();
+}
+
+function updateLevelIndicators(level) {
+  for (let i = 0; i <= 3; i++) {
+    const el = document.getElementById(`lvl-${i}`);
+    el.className = `w-2 h-2 rounded-full ${i <= level ? 'bg-indigo-500' : 'bg-gray-700'}`;
+  }
+}
+
+// ─── Setup ────────────────────────────────────────────────────────────────────
+function loadSaved() {
+  document.getElementById('inp-model').value    = localStorage.getItem('mc_model') || 'llama3.2';
+  document.getElementById('inp-name').value     = localStorage.getItem('mc_name') || '';
+  document.getElementById('inp-schedule').value = localStorage.getItem('mc_schedule') || '';
+  document.getElementById('inp-time').value     = localStorage.getItem('mc_time') || '07:30';
+}
+
+function startAlarm() {
+  const model   = document.getElementById('inp-model').value;
+  const name    = document.getElementById('inp-name').value.trim() || '사용자';
+  const schedule= document.getElementById('inp-schedule').value.trim();
+  const time    = document.getElementById('inp-time').value;
+  const errEl   = document.getElementById('setup-error');
+
+  if (!time) { errEl.textContent = '알람 시간을 선택해주세요.'; errEl.classList.remove('hidden'); return; }
+  errEl.classList.add('hidden');
+
+  S.model = model; S.userName = name; S.schedule = schedule; S.alarmTime = time;
+  localStorage.setItem('mc_model', model);
+  localStorage.setItem('mc_name', name);
+  localStorage.setItem('mc_schedule', schedule);
+  localStorage.setItem('mc_time', time);
+
+  document.getElementById('sb-name').textContent = name;
+  document.getElementById('sb-schedule').textContent = schedule || '특별한 일정 없음';
+  document.getElementById('alarm-time-display').textContent = time;
+
+  showView('standby');
+  startClock();
+  fetchWeather();
+  startAlarmCheck();
+}
+
+// ─── Clock & Countdown ────────────────────────────────────────────────────────
+function startClock() {
+  if (S.clockInterval) clearInterval(S.clockInterval);
+  const tick = () => {
+    const now = new Date();
+    document.getElementById('clock-display').textContent =
+      now.toLocaleTimeString('ko-KR', {hour:'2-digit', minute:'2-digit', hour12:false});
+    document.getElementById('date-display').textContent =
+      now.toLocaleDateString('ko-KR', {year:'numeric', month:'long', day:'numeric', weekday:'long'});
+
+    const [ah, am] = S.alarmTime.split(':').map(Number);
+    const alarm = new Date(); alarm.setHours(ah, am, 0, 0);
+    if (alarm <= now) alarm.setDate(alarm.getDate() + 1);
+    const diff = alarm - now;
+    const h = Math.floor(diff / 3600000);
+    const m = Math.floor((diff % 3600000) / 60000);
+    const s = Math.floor((diff % 60000) / 1000);
+    document.getElementById('countdown-display').textContent =
+      `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  };
+  tick();
+  S.clockInterval = setInterval(tick, 1000);
+}
+
+function startAlarmCheck() {
+  if (S.alarmCheckInterval) clearInterval(S.alarmCheckInterval);
+  S.alarmCheckInterval = setInterval(() => {
+    const now = new Date();
+    const [ah, am] = S.alarmTime.split(':').map(Number);
+    if (now.getHours() === ah && now.getMinutes() === am && now.getSeconds() < 5) {
+      triggerAlarm();
+    }
+  }, 1000);
+}
+
+function triggerAlarm() {
+  clearInterval(S.alarmCheckInterval);
+  clearInterval(S.clockInterval);
+  showView('ringing');
+  startRingSound();
+}
+
+// ─── Ring Sound ───────────────────────────────────────────────────────────────
+function startRingSound() {
+  stopRingSound();
+  const play = () => {
+    try {
+      S.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const ctx = S.audioCtx;
+      [[880, 0], [660, 0.2], [880, 0.5], [660, 0.7]].forEach(([freq, t]) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.25, ctx.currentTime + t);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + t + 0.18);
+        osc.start(ctx.currentTime + t);
+        osc.stop(ctx.currentTime + t + 0.19);
+      });
+    } catch (e) { /* AudioContext not available */ }
+  };
+  play();
+  S.ringInterval = setInterval(play, 1400);
+}
+
+function stopRingSound() {
+  if (S.ringInterval) { clearInterval(S.ringInterval); S.ringInterval = null; }
+  try { if (S.audioCtx) { S.audioCtx.close(); S.audioCtx = null; } } catch(e){}
+}
+
+// ─── Call Flow ────────────────────────────────────────────────────────────────
+function declineCall() {
+  stopRingSound();
+  // Re-snooze: check alarm again in 5 minutes
+  S.alarmTime = (() => {
+    const d = new Date(); d.setMinutes(d.getMinutes() + 5);
+    return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+  })();
+  showView('standby');
+  startClock();
+  startAlarmCheck();
+}
+
+async function acceptCall() {
+  stopRingSound();
+  showView('call');
+  document.getElementById('chat-messages').innerHTML = '';
+  S.conversationHistory = [];
+  S.conversationLevel = 0;
+  S.alarmCanEnd = false;
+
+  // Disable end call button
+  const btnEnd = document.getElementById('btn-end-call');
+  btnEnd.disabled = true;
+  btnEnd.className = 'flex-1 flex items-center justify-center gap-2 bg-gray-800 text-gray-600 py-3.5 rounded-xl text-sm transition cursor-not-allowed';
+
+  // Start call timer
+  S.callStartTime = Date.now();
+  if (S.callTimerInterval) clearInterval(S.callTimerInterval);
+  S.callTimerInterval = setInterval(() => {
+    const s = Math.floor((Date.now() - S.callStartTime) / 1000);
+    document.getElementById('call-timer').textContent =
+      `${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;
+  }, 1000);
+
+  // Check STT support
+  const hasSpeechRecognition = 'SpeechRecognition' in window || 'webkitSpeechRecognition' in window;
+  if (!hasSpeechRecognition) {
+    document.getElementById('text-input-area').classList.remove('hidden');
+    document.getElementById('btn-mic').disabled = true;
+    document.getElementById('btn-mic').className = 'flex-1 flex items-center justify-center gap-2 bg-gray-800 text-gray-600 py-3.5 rounded-xl text-sm cursor-not-allowed';
+  }
+
+  // Get initial message
+  showStatus('thinking');
+  try {
+    const params = new URLSearchParams({
+      user_name: S.userName,
+      weather_info: S.weatherInfo,
+      user_schedule: S.schedule,
+      model: S.model,
+    });
+    const res = await fetch(`/api/initial-message?${params}`);
+    if (!res.ok) throw new Error((await res.json()).detail);
+    const data = await res.json();
+    hideStatus();
+    addMessage('assistant', data.message);
+    S.conversationHistory.push({ role: 'assistant', content: data.message });
+    speakAndListen(data.message);
+  } catch (e) {
+    hideStatus();
+    const msg = `안녕하세요, ${S.userName}님! 좋은 아침이에요. 일어나셨나요?`;
+    addMessage('assistant', msg);
+    S.conversationHistory.push({ role: 'assistant', content: msg });
+    speakAndListen(msg);
+  }
+}
+
+// ─── TTS + STT Loop ───────────────────────────────────────────────────────────
+function speakAndListen(text) {
+  if (!('speechSynthesis' in window)) {
+    // No TTS — go straight to listening
+    startListening();
+    return;
+  }
+  showStatus('speaking');
+  S.isSpeaking = true;
+  window.speechSynthesis.cancel();
+
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.lang = 'ko-KR';
+  utter.rate = 1.05;
+  utter.pitch = 1.1;
+
+  // Try to find a Korean voice
+  const voices = window.speechSynthesis.getVoices();
+  const koVoice = voices.find(v => v.lang.startsWith('ko'));
+  if (koVoice) utter.voice = koVoice;
+
+  utter.onend = () => {
+    S.isSpeaking = false;
+    hideStatus();
+    if (!S.alarmCanEnd) startListening();
+  };
+  utter.onerror = () => {
+    S.isSpeaking = false;
+    hideStatus();
+    if (!S.alarmCanEnd) startListening();
+  };
+
+  window.speechSynthesis.speak(utter);
+}
+
+function startListening() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) {
+    document.getElementById('text-input-area').classList.remove('hidden');
+    return;
+  }
+
+  showStatus('listening');
+  S.isListening = true;
+  document.getElementById('mic-icon').textContent = '🔴';
+  document.getElementById('mic-label').textContent = '듣는 중...';
+
+  S.recognition = new SR();
+  S.recognition.lang = 'ko-KR';
+  S.recognition.interimResults = false;
+  S.recognition.maxAlternatives = 1;
+  S.recognition.continuous = false;
+
+  S.recognition.onresult = (e) => {
+    const transcript = e.results[0][0].transcript;
+    stopListening();
+    handleUserSpeech(transcript);
+  };
+  S.recognition.onerror = (e) => {
+    stopListening();
+    if (e.error === 'no-speech') {
+      // Retry or show text input
+      document.getElementById('text-input-area').classList.remove('hidden');
+    }
+  };
+  S.recognition.onend = () => {
+    if (S.isListening) stopListening();
+  };
+  S.recognition.start();
+}
+
+function stopListening() {
+  S.isListening = false;
+  hideStatus();
+  document.getElementById('mic-icon').textContent = '🎤';
+  document.getElementById('mic-label').textContent = '음성 입력';
+  try { if (S.recognition) S.recognition.stop(); } catch(e) {}
+}
+
+function toggleMic() {
+  if (S.isSpeaking) return;
+  if (S.isListening) {
+    stopListening();
+    document.getElementById('text-input-area').classList.remove('hidden');
+  } else {
+    document.getElementById('text-input-area').classList.add('hidden');
+    startListening();
+  }
+}
+
+function toggleTextInput() {
+  const area = document.getElementById('text-input-area');
+  if (area.classList.contains('hidden')) {
+    stopListening();
+    area.classList.remove('hidden');
+    document.getElementById('text-input').focus();
+  } else {
+    area.classList.add('hidden');
+  }
+}
+
+function sendTextMessage() {
+  const inp = document.getElementById('text-input');
+  const text = inp.value.trim();
+  if (!text) return;
+  inp.value = '';
+  stopListening();
+  handleUserSpeech(text);
+}
+
+async function handleUserSpeech(text) {
+  addMessage('user', text);
+  S.conversationHistory.push({ role: 'user', content: text });
+  showStatus('thinking');
+
+  try {
+    // Build history without the last user message (it's sent separately as `message`)
+    const history = S.conversationHistory.slice(0, -1);
+
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: text,
+        history,
+        user_name: S.userName,
+        user_schedule: S.schedule,
+        weather_info: S.weatherInfo,
+        conversation_level: S.conversationLevel,
+        model: S.model,
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || '오류가 발생했습니다.');
+    }
+
+    const data = await res.json();
+    hideStatus();
+
+    S.conversationLevel = data.conversation_level;
+    S.alarmCanEnd = data.alarm_can_end;
+    updateLevelIndicators(S.conversationLevel);
+
+    addMessage('assistant', data.reply);
+    S.conversationHistory.push({ role: 'assistant', content: data.reply });
+
+    if (S.alarmCanEnd) {
+      // Enable end call button
+      const btnEnd = document.getElementById('btn-end-call');
+      btnEnd.disabled = false;
+      btnEnd.className = 'flex-1 flex items-center justify-center gap-2 bg-red-600 hover:bg-red-500 py-3.5 rounded-xl text-sm font-semibold transition cursor-pointer';
+
+      speakThenEnd(data.reply);
+    } else {
+      speakAndListen(data.reply);
+    }
+  } catch (e) {
+    hideStatus();
+    const errMsg = `오류: ${e.message}`;
+    addMessage('assistant', errMsg);
+  }
+}
+
+function speakThenEnd(text) {
+  if (!('speechSynthesis' in window)) return;
+  showStatus('speaking');
+  window.speechSynthesis.cancel();
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.lang = 'ko-KR'; utter.rate = 1.05; utter.pitch = 1.1;
+  const voices = window.speechSynthesis.getVoices();
+  const koVoice = voices.find(v => v.lang.startsWith('ko'));
+  if (koVoice) utter.voice = koVoice;
+  utter.onend = () => hideStatus();
+  window.speechSynthesis.speak(utter);
+}
+
+function endCall() {
+  if (!S.alarmCanEnd) return;
+  clearInterval(S.callTimerInterval);
+  window.speechSynthesis?.cancel();
+  stopListening();
+
+  const now = new Date();
+  document.getElementById('done-time').textContent =
+    now.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: true }) + ' 기상 ✓';
+  showView('done');
+}
+
+// ─── Weather ──────────────────────────────────────────────────────────────────
+async function fetchWeather() {
+  const weatherCodes = {
+    0:'맑음',1:'대체로 맑음',2:'부분적으로 흐림',3:'흐림',
+    45:'안개',48:'안개',51:'가벼운 이슬비',53:'이슬비',55:'강한 이슬비',
+    61:'가벼운 비',63:'비',65:'강한 비',71:'눈',73:'눈',75:'강한 눈',
+    80:'소나기',81:'소나기',82:'강한 소나기',95:'뇌우',99:'뇌우',
+  };
+  const weatherIcons = {
+    0:'☀️',1:'🌤',2:'⛅',3:'☁️',45:'🌫',48:'🌫',
+    51:'🌦',53:'🌦',55:'🌧',61:'🌧',63:'🌧',65:'🌧',
+    71:'🌨',73:'❄️',75:'❄️',80:'🌦',81:'🌦',82:'⛈',95:'⛈',99:'⛈',
+  };
+
+  const pos = await new Promise(r => {
+    navigator.geolocation.getCurrentPosition(
+      p => r({ lat: p.coords.latitude, lon: p.coords.longitude }),
+      () => r({ lat: 37.5665, lon: 126.9780 })
+    );
+  });
+
+  try {
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${pos.lat}&longitude=${pos.lon}`
+      + `&current=temperature_2m,weather_code&timezone=Asia%2FSeoul&forecast_days=1`;
+    const res = await fetch(url);
+    const data = await res.json();
+    const temp = Math.round(data.current.temperature_2m);
+    const code = data.current.weather_code;
+    const desc = weatherCodes[code] ?? '보통';
+    const icon = weatherIcons[code] ?? '🌤';
+    S.weatherInfo = `${desc} ${temp}°C`;
+    document.getElementById('sb-weather').textContent = `${icon} ${desc} · ${temp}°C`;
+  } catch {
+    S.weatherInfo = '';
+    document.getElementById('sb-weather').textContent = '날씨 정보 없음';
+  }
+}
+
+// ─── Reset ────────────────────────────────────────────────────────────────────
+function resetApp() {
+  clearInterval(S.callTimerInterval);
+  clearInterval(S.alarmCheckInterval);
+  clearInterval(S.clockInterval);
+  stopRingSound();
+  window.speechSynthesis?.cancel();
+  showView('setup');
+}
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
+loadSaved();
+
+// Load voices async (some browsers need this)
+if ('speechSynthesis' in window) {
+  window.speechSynthesis.getVoices();
+  window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
+}
+</script>
+</body>
+</html>
