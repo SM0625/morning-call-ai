@@ -79,12 +79,12 @@
         <label class="block text-xs font-medium text-gray-400 mb-1.5">AI 모델</label>
         <select id="inp-model"
           class="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 transition text-white">
-          <option value="llama3.2">llama3.2 (권장 · 2GB)</option>
-          <option value="gemma3:4b">gemma3:4b (고품질 · 3GB)</option>
-          <option value="phi4-mini">phi4-mini (빠름 · 2.5GB)</option>
-          <option value="qwen2.5:3b">qwen2.5:3b (한국어 우수 · 2GB)</option>
+          <option value="gemma3:4b">gemma3:4b (권장 · 자연스러운 대화 · 3.3GB)</option>
+          <option value="exaone3.5:2.4b">exaone3.5:2.4b (빠름 · 한국어 특화 · 1.6GB)</option>
+          <option value="qwen2.5:3b">qwen2.5:3b (2GB)</option>
+          <option value="llama3.2">llama3.2 (2GB)</option>
         </select>
-        <p class="text-xs text-gray-600 mt-1">모델이 없으면 터미널에서: <span class="text-indigo-400 font-mono">ollama pull llama3.2</span></p>
+        <p class="text-xs text-gray-600 mt-1">모델이 없으면 터미널에서: <span class="text-indigo-400 font-mono">ollama pull gemma3:4b</span></p>
       </div>
 
       <!-- Name -->
@@ -363,7 +363,7 @@ function updateLevelIndicators(level) {
 
 // ─── Setup ────────────────────────────────────────────────────────────────────
 function loadSaved() {
-  document.getElementById('inp-model').value    = localStorage.getItem('mc_model') || 'llama3.2';
+  document.getElementById('inp-model').value    = localStorage.getItem('mc_model') || 'gemma3:4b';
   document.getElementById('inp-name').value     = localStorage.getItem('mc_name') || '';
   document.getElementById('inp-schedule').value = localStorage.getItem('mc_schedule') || '';
   document.getElementById('inp-time').value     = localStorage.getItem('mc_time') || '07:30';
@@ -421,9 +421,17 @@ function startClock() {
 
 function startAlarmCheck() {
   if (S.alarmCheckInterval) clearInterval(S.alarmCheckInterval);
+  let warmedUp = false;
   S.alarmCheckInterval = setInterval(() => {
     const now = new Date();
     const [ah, am] = S.alarmTime.split(':').map(Number);
+    // 알람 2분 전에 AI 모델을 미리 올려 둔다
+    const alarm = new Date(); alarm.setHours(ah, am, 0, 0);
+    const left = alarm - now;
+    if (!warmedUp && left > 0 && left <= 120000) {
+      warmedUp = true;
+      fetch(`/api/warmup?model=${encodeURIComponent(S.model)}`, { method: 'POST' }).catch(() => {});
+    }
     if (now.getHours() === ah && now.getMinutes() === am && now.getSeconds() < 5) {
       triggerAlarm();
     }
@@ -526,6 +534,8 @@ async function acceptCall() {
     speakAndListen(data.message);
   } catch (e) {
     hideStatus();
+    // AI 호출 실패 원인을 숨기지 않고 보여준 뒤 기본 인사로 대체
+    addMessage('assistant', `⚠️ AI 응답 실패: ${e.message}`);
     const msg = `안녕하세요, ${S.userName}님! 좋은 아침이에요. 일어나셨나요?`;
     addMessage('assistant', msg);
     S.conversationHistory.push({ role: 'assistant', content: msg });

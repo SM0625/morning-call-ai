@@ -7,7 +7,7 @@ echo  ========================================
 echo.
 echo  [사전 준비] Ollama가 설치되어 있어야 합니다.
 echo   - 설치: https://ollama.com 에서 다운로드
-echo   - 모델 다운로드: ollama pull llama3.2
+echo   - 모델 다운로드: ollama pull gemma3:4b
 echo   - 실행: ollama serve  (별도 터미널)
 echo.
 
