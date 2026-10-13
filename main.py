@@ -71,7 +71,7 @@ STATE_GUIDES = {
              "아직 깨우는 중이라는 걸 상기시키며 이번 목표로 돌아오세요.",
 }
 
-# 단계 이동: 깼다는 말은 침대 밖으로 나오기 전 단계(2)까지만, 몸을 움직였으면 두 단계씩
+# 단계 이동: 깼다는 말은 침대 밖으로 나오기 전 단계(2)까지만, 몸을 움직였으면 두 단계씩 (마무리 조건은 next_stage 참고)
 STATE_STEP = {"awake": (1, 2), "up": (2, LAST_STAGE), "sleepy": (0, LAST_STAGE), "other": (0, LAST_STAGE)}
 
 # "누군가 나를 깨우고 있다"는 느낌을 주는 표현 아이디어 (매 턴 상황에 맞는 것을 하나 골라 지시에 넣는다)
@@ -161,7 +161,7 @@ def build_system_prompt(user_name: str, user_schedule: str, weather_info: str) -
 STATE_RULES = [
     ("sleepy", re.compile(
         # 일어나기 거부·부정
-        r"안\s?일어|못\s?일어|못\s?나가|안\s?깼|못\s?(해|하겠)|싫|귀찮|"
+        r"안\s?일어|못\s?일어|못\s?나가|안\s?깼|못\s?(해|하겠)|싫|귀찮|힘들|깨우지\s?마|"
         # 더 자려 함
         r"졸려|졸리|피곤|자고\s?싶|더\s?(잘|자|누워|있을)|(만|좀)\s?더|\d+\s?분만|이따|잘게|잘래|잘\s?거야|잔다|"
         r"다시\s?(누|잘|자)|자는\s?중|자고\s?있|누워\s?있|이불\s?속|음냐|쿨쿨|zz|"
@@ -171,12 +171,14 @@ STATE_RULES = [
         r"휴강|결석|결근|안\s?가도|쉴래|쉬고\s?싶|오늘은\s?안|면\s?안\s?(되나|돼|될까)|안\s?되나|"
         r"재택|쉬면|빠져도|늦어도|지각해도|병가|연차")),
     # "일어나는 중", "눈 뜨고 있어"는 아직 침대 안이므로 아래 '움직이는 중' 패턴보다 먼저 본다
-    ("awake", re.compile(r"일어나는\s?중|일어나고\s?있|눈\s?뜨고|정신\s?(차|들)")),
+    ("awake", re.compile(r"일어나는\s?중|일어나고\s?있|눈\s?뜨고|정신\s?(차|들)|기지개|침대에\s?앉")),
+    # 꿈 이야기는 "나왔어" 같은 말이 섞여도 몸을 움직였다는 뜻이 아니다
+    ("other", re.compile(r"꿈")),
     ("up", re.compile(
         # 장소·씻기 등 침대 밖 활동
         r"침대.{0,4}나왔|나왔어|나와\s?있|씻|세수|양치|이\s?닦|샤워|머리\s?감|화장|화장실|거실|부엌|"
-        # "~하는 중", "~하고 있어": 무언가를 하고 있음
-        r"[가-힣]\s?중(이야|이에요|임)?\s*$|[가-힣]고\s?있(어|음|다|는)|"
+        # "~하는 중", "~하고 있어": 무언가를 하고 있음 ("다이어트 중"처럼 명사 + 중은 제외)
+        r"[가-힣]는\s?중|[가-힣]고\s?있(어|음|다|는)|(출근|외출|등교|나갈)\s?준비|"
         # 몸을 움직인 동작의 과거형
         r"(?:^|\s)(열었|신었|켰|껐|챙겼|입었|닦았|감았|마셨|먹었|나갔|갰|개었|정리했|차렸|스트레칭)|"
         # "보일러 켜고 왔어", "세수하러 왔어"처럼 다녀왔다는 표현
@@ -202,6 +204,10 @@ def classify_user_state(user: str) -> str:
 
 
 def next_stage(stage: int, state: str) -> int:
+    # 규칙 분류는 처음 보는 표현에서 약 60%만 맞고, 가끔 질문이나 투정을 "up"으로 오판한다.
+    # 오판 한 번으로 통화가 끝나지 않도록, 마무리는 2단계("다 일어나면 알려 달라")에서 up이 한 번 더 나와야 한다.
+    if state == "up" and stage < 2:
+        return 2
     step, cap = STATE_STEP[state]
     return max(stage, min(stage + step, cap))
 
@@ -283,7 +289,7 @@ def generate_reply(
         t0 = time.time()
         reply = fix_vocative(call_ollama(model, system, attempt_messages), user_name)
         issues = reply_issues(reply, user_msg, stage, first, previous)
-        log.info("답변 검사 %s %.1fs | %s", issues or "통과", time.time() - t0, reply)
+        log.debug("답변 검사 %s %.1fs | %s", issues or "통과", time.time() - t0, reply)
         if best_issues is None or len(issues) < len(best_issues):
             best, best_issues = reply, issues
         # 가벼운 문제만 있으면 재생성하지 않는다 (응답 속도 우선)
@@ -316,9 +322,6 @@ def call_ollama(model: str, system: str, messages: list) -> str:
             [{"role": "system", "content": system}] + messages,
             {"temperature": 0.7, "repeat_penalty": 1.15, "num_predict": 90},
         )
-        log.info("ollama 프롬프트 %s토큰 %.1fs, 생성 %s토큰 %.1fs",
-                 response.get("prompt_eval_count"), (response.get("prompt_eval_duration") or 0) / 1e9,
-                 response.get("eval_count"), (response.get("eval_duration") or 0) / 1e9)
         return clean_reply(response["message"]["content"])
     except Exception as e:
         err = str(e)
@@ -337,7 +340,7 @@ async def chat(request: ChatRequest):
         (m.content for m in reversed(request.history) if m.role == "assistant"), ""
     )
     state = classify_user_state(request.message)
-    log.info("분류 %s | %s", state, request.message)
+    log.debug("분류 %s | %s", state, request.message)
     stage = next_stage(max(0, min(request.conversation_level, LAST_STAGE)), state)
 
     system_prompt = build_system_prompt(
