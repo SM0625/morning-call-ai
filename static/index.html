@@ -87,6 +87,16 @@
         <p class="text-xs text-gray-600 mt-1">모델이 없으면 터미널에서: <span class="text-indigo-400 font-mono">ollama pull gemma3:4b</span></p>
       </div>
 
+      <!-- Server address (안드로이드 앱에서만 표시). 기본값은 APK를 빌드한 PC 주소라 보통은 열 필요가 없다 -->
+      <details id="server-field" class="hidden text-xs text-gray-500">
+        <summary class="cursor-pointer select-none">고급 설정 · PC 서버 <span id="server-current" class="font-mono"></span></summary>
+        <div class="mt-2">
+          <input id="inp-server" type="url" placeholder="비워 두면 기본 주소 사용"
+            class="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 transition"/>
+          <p class="mt-1">PC 주소가 바뀌었을 때만 http://주소:8000 형식으로 입력하세요.</p>
+        </div>
+      </details>
+
       <!-- Name -->
       <div>
         <label class="block text-xs font-medium text-gray-400 mb-1.5">이름</label>
@@ -310,6 +320,137 @@ const S = {
   callStartTime: null, callTimerInterval: null,
   alarmCheckInterval: null, clockInterval: null,
   ringInterval: null, audioCtx: null,
+  utteranceSeq: 0, utteranceCallbacks: {},
+  weatherPromise: null, initialPromise: null,
+};
+
+// ─── Android 앱 연동 ──────────────────────────────────────────────────────────
+// 안드로이드 앱(WebView) 안에서는 MorningCallApp 브리지로 알람·벨소리·음성을 네이티브로 처리한다.
+// 브리지가 없으면(일반 브라우저) 기존처럼 웹 API를 쓴다.
+const NATIVE = window.MorningCallApp || null;
+const SILENT_MESSAGE = '(대답 없음)';  // 서버가 "말이 없음"으로 인식하는 약속된 메시지
+const MAX_SILENT_NUDGES = 5;           // 대답이 없을 때 AI가 다시 깨우는 최대 횟수
+
+function apiUrl(path) {
+  return (NATIVE ? NATIVE.getServerUrl().replace(/\/+$/, '') : '') + path;
+}
+
+const END_OF_SPEECH_MS = 800;  // 중간 인식 결과가 이만큼 그대로면 말이 끝난 것으로 본다
+
+// 말하기(TTS)·듣기(STT): 앱에서는 안드로이드 음성 기능, 브라우저에서는 Web Speech API
+const Voice = {
+  // 말하기 대기열 뒤에 붙인다. 앞 구절을 읽는 동안 다음 구절이 준비돼 끊김 없이 이어진다.
+  enqueue(text, onDone) {
+    if (NATIVE) {
+      const id = String(++S.utteranceSeq);
+      S.utteranceCallbacks[id] = onDone;
+      NATIVE.speak(text, id);
+      return;
+    }
+    if (!('speechSynthesis' in window)) { onDone(); return; }
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = 'ko-KR';
+    utter.rate = 1.05;
+    utter.pitch = 1.1;
+    const koVoice = window.speechSynthesis.getVoices().find(v => v.lang.startsWith('ko'));
+    if (koVoice) utter.voice = koVoice;
+    utter.onend = onDone;
+    utter.onerror = onDone;
+    window.speechSynthesis.speak(utter);
+  },
+  stopSpeaking() {
+    S.utteranceCallbacks = {};
+    if (NATIVE) NATIVE.stopSpeaking();
+    else window.speechSynthesis?.cancel();
+  },
+  canListen() {
+    return !!NATIVE || 'SpeechRecognition' in window || 'webkitSpeechRecognition' in window;
+  },
+  // onResult(텍스트), onError('no-speech' | 'not-allowed' | 'network' | 'error')
+  listen(onResult, onError) {
+    if (NATIVE) {
+      S.onNativeSpeech = { onResult, onError };
+      NATIVE.startListening();
+      return;
+    }
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    S.recognition = new SR();
+    S.recognition.lang = 'ko-KR';
+    S.recognition.interimResults = true;
+    S.recognition.maxAlternatives = 1;
+    S.recognition.continuous = false;
+    let finished = false;
+    let latest = '';
+    let quietTimer = null;
+    const finish = (fn) => { if (finished) return; finished = true; clearTimeout(quietTimer); fn(); };
+    S.recognition.onresult = (e) => {
+      latest = Array.from(e.results).map(r => r[0].transcript).join('');
+      if (e.results[e.results.length - 1].isFinal) { finish(() => onResult(latest)); return; }
+      // 중간 결과가 잠시 그대로면 기본 침묵 대기(1~2초)를 기다리지 않고 바로 끝낸다
+      clearTimeout(quietTimer);
+      quietTimer = setTimeout(() => { try { S.recognition.stop(); } catch (err) {} }, END_OF_SPEECH_MS);
+    };
+    S.recognition.onerror = (e) => finish(() => onError(e.error));
+    // 최종 결과 없이 끝나면 중간 결과를 쓰고, 그것도 없으면 말이 없었던 것으로 본다
+    S.recognition.onend = () => finish(() => latest ? onResult(latest) : onError('no-speech'));
+    S.recognition.start();
+  },
+  stopListening() {
+    S.onNativeSpeech = null;
+    if (NATIVE) { NATIVE.stopListening(); return; }
+    if (S.recognition) {
+      S.recognition.onresult = S.recognition.onerror = S.recognition.onend = null;
+      try { S.recognition.stop(); } catch (e) {}
+    }
+  },
+};
+
+// 구절들을 차례로 읽고, 응답이 끝났고(close) 대기열도 비면 onEmpty를 한 번 부른다
+const SpeechQueue = {
+  pending: 0, closed: true, onEmpty: null, generation: 0,
+  begin(onEmpty) { this.generation += 1; this.pending = 0; this.closed = false; this.onEmpty = onEmpty; },
+  push(text) {
+    // 취소된 이전 대기열의 '끝남' 알림이 늦게 와도 지금 대기열 개수에 섞이지 않게 한다
+    const generation = this.generation;
+    this.pending += 1;
+    Voice.enqueue(text, () => {
+      if (generation !== this.generation) return;
+      this.pending -= 1;
+      this.check();
+    });
+  },
+  close() { this.closed = true; this.check(); },
+  cancel() { this.generation += 1; this.onEmpty = null; this.pending = 0; Voice.stopSpeaking(); },
+  check() {
+    if (!this.closed || this.pending > 0 || !this.onEmpty) return;
+    const cb = this.onEmpty;
+    this.onEmpty = null;
+    cb();
+  },
+};
+
+// 네이티브 → 웹 콜백 (MainActivity가 evaluateJavascript로 호출)
+window.onNativeSpeakDone = (id) => {
+  const cb = S.utteranceCallbacks[id];
+  delete S.utteranceCallbacks[id];
+  if (cb) cb();
+};
+window.onNativeSpeechResult = (text) => {
+  const h = S.onNativeSpeech;
+  S.onNativeSpeech = null;
+  if (h) h.onResult(text);
+};
+window.onNativeSpeechError = (code) => {
+  const h = S.onNativeSpeech;
+  S.onNativeSpeech = null;
+  if (h) h.onError(code);
+};
+// 안드로이드 알람이 울려 앱이 열렸을 때. 앱이 꺼져 있다가 켜졌을 수 있으므로 저장된 설정을 다시 읽는다.
+window.onNativeAlarm = () => {
+  loadSaved();
+  applySettings();
+  S.weatherPromise = fetchWeather();
+  triggerAlarm();
 };
 
 // ─── Utility ──────────────────────────────────────────────────────────────────
@@ -343,15 +484,14 @@ function addMessage(role, text) {
   const isAI = role === 'assistant';
   const div = document.createElement('div');
   div.className = `flex ${isAI ? 'justify-start' : 'justify-end'}`;
-  div.innerHTML = `
-    <div class="max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed
-      ${isAI
-        ? 'bg-indigo-900/60 text-indigo-100 rounded-tl-sm'
-        : 'bg-gray-700 text-white rounded-tr-sm'}">
-      ${text.replace(/\n/g, '<br>')}
-    </div>`;
+  const bubble = document.createElement('div');
+  bubble.className = `max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-line ${
+    isAI ? 'bg-indigo-900/60 text-indigo-100 rounded-tl-sm' : 'bg-gray-700 text-white rounded-tr-sm'}`;
+  bubble.textContent = text;
+  div.appendChild(bubble);
   el.appendChild(div);
   scrollChat();
+  return bubble;  // 스트리밍 중에 구절을 이어 붙일 수 있도록
 }
 
 function updateLevelIndicators(level) {
@@ -367,16 +507,34 @@ function loadSaved() {
   document.getElementById('inp-name').value     = localStorage.getItem('mc_name') || '';
   document.getElementById('inp-schedule').value = localStorage.getItem('mc_schedule') || '';
   document.getElementById('inp-time').value     = localStorage.getItem('mc_time') || '07:30';
+  if (NATIVE) {
+    document.getElementById('server-field').classList.remove('hidden');
+    document.getElementById('server-current').textContent = NATIVE.getServerUrl() || '(미설정)';
+  }
 }
 
-function startAlarm() {
+// 입력값을 검사해 S에 반영한다. 문제가 있으면 오류를 보여 주고 false
+function applySettings() {
   const model   = document.getElementById('inp-model').value;
   const name    = document.getElementById('inp-name').value.trim() || '사용자';
   const schedule= document.getElementById('inp-schedule').value.trim();
   const time    = document.getElementById('inp-time').value;
   const errEl   = document.getElementById('setup-error');
+  const showErr = (msg) => { errEl.textContent = msg; errEl.classList.remove('hidden'); return false; };
 
-  if (!time) { errEl.textContent = '알람 시간을 선택해주세요.'; errEl.classList.remove('hidden'); return; }
+  if (!time) return showErr('알람 시간을 선택해주세요.');
+  if (NATIVE) {
+    // 새 주소를 입력했을 때만 바꾸고, 비워 두면 지금 주소(기본값 또는 이전에 입력한 값)를 그대로 쓴다
+    const server = document.getElementById('inp-server').value.trim();
+    if (server) {
+      if (!/^https?:\/\/.+/.test(server)) return showErr('PC 서버 주소를 http://로 시작하게 입력해주세요.');
+      NATIVE.setServerUrl(server);
+    }
+    if (!NATIVE.getServerUrl()) {
+      document.getElementById('server-field').open = true;
+      return showErr('PC 서버 주소를 찾지 못했어요. 고급 설정에서 입력해주세요.');
+    }
+  }
   errEl.classList.add('hidden');
 
   S.model = model; S.userName = name; S.schedule = schedule; S.alarmTime = time;
@@ -388,11 +546,21 @@ function startAlarm() {
   document.getElementById('sb-name').textContent = name;
   document.getElementById('sb-schedule').textContent = schedule || '특별한 일정 없음';
   document.getElementById('alarm-time-display').textContent = time;
+  return true;
+}
 
+function startAlarm() {
+  if (!applySettings()) return;
   showView('standby');
   startClock();
-  fetchWeather();
-  startAlarmCheck();
+  S.weatherPromise = fetchWeather();
+  if (NATIVE) {
+    // 안드로이드 알람으로 등록해야 화면이 꺼져 있거나 앱이 닫혀 있어도 울린다
+    const [h, m] = S.alarmTime.split(':').map(Number);
+    NATIVE.setAlarm(h, m);
+  } else {
+    startAlarmCheck();
+  }
 }
 
 // ─── Clock & Countdown ────────────────────────────────────────────────────────
@@ -430,7 +598,7 @@ function startAlarmCheck() {
     const left = alarm - now;
     if (!warmedUp && left > 0 && left <= 120000) {
       warmedUp = true;
-      fetch(`/api/warmup?model=${encodeURIComponent(S.model)}`, { method: 'POST' }).catch(() => {});
+      warmupModel();
     }
     if (now.getHours() === ah && now.getMinutes() === am && now.getSeconds() < 5) {
       triggerAlarm();
@@ -438,16 +606,39 @@ function startAlarmCheck() {
   }, 1000);
 }
 
+function userParams() {
+  return new URLSearchParams({
+    user_name: S.userName, user_schedule: S.schedule, weather_info: S.weatherInfo, model: S.model,
+  });
+}
+
+// 사용자 정보가 담긴 시스템 프롬프트까지 미리 처리해 두면 첫 대답이 빨라진다
+function warmupModel() {
+  fetch(apiUrl(`/api/warmup?${userParams()}`), { method: 'POST' }).catch(() => {});
+}
+
+// 첫 인사는 벨이 울리는 동안 미리 받아 둔다. 전화를 받자마자 바로 말할 수 있다.
+async function prefetchInitialMessage() {
+  // 날씨가 늦게 오면 첫 인사를 기다리게 하지 않는다 (최대 1.5초)
+  await Promise.race([S.weatherPromise, new Promise(r => setTimeout(r, 1500))]);
+  const res = await fetch(apiUrl(`/api/initial-message?${userParams()}`));
+  if (!res.ok) throw new Error((await res.json()).detail);
+  return res.json();  // { message, user_content }
+}
+
 function triggerAlarm() {
   clearInterval(S.alarmCheckInterval);
   clearInterval(S.clockInterval);
   showView('ringing');
   startRingSound();
+  S.initialPromise = prefetchInitialMessage();
+  S.initialPromise.catch(() => {});  // 실패는 전화를 받을 때 처리
 }
 
 // ─── Ring Sound ───────────────────────────────────────────────────────────────
 function startRingSound() {
   stopRingSound();
+  if (NATIVE) { NATIVE.startRinging(); return; }
   const play = () => {
     try {
       S.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -469,6 +660,7 @@ function startRingSound() {
 }
 
 function stopRingSound() {
+  if (NATIVE) NATIVE.stopRinging();
   if (S.ringInterval) { clearInterval(S.ringInterval); S.ringInterval = null; }
   try { if (S.audioCtx) { S.audioCtx.close(); S.audioCtx = null; } } catch(e){}
 }
@@ -481,9 +673,11 @@ function declineCall() {
     const d = new Date(); d.setMinutes(d.getMinutes() + 5);
     return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
   })();
+  document.getElementById('alarm-time-display').textContent = S.alarmTime;
   showView('standby');
   startClock();
-  startAlarmCheck();
+  if (NATIVE) NATIVE.snooze(5);
+  else startAlarmCheck();
 }
 
 async function acceptCall() {
@@ -493,6 +687,7 @@ async function acceptCall() {
   S.conversationHistory = [];
   S.conversationLevel = 0;
   S.alarmCanEnd = false;
+  S.silentCount = 0;
 
   // Disable end call button
   const btnEnd = document.getElementById('btn-end-call');
@@ -509,30 +704,25 @@ async function acceptCall() {
   }, 1000);
 
   // Check STT support
-  const hasSpeechRecognition = 'SpeechRecognition' in window || 'webkitSpeechRecognition' in window;
-  if (!hasSpeechRecognition) {
+  if (!Voice.canListen()) {
     document.getElementById('text-input-area').classList.remove('hidden');
     document.getElementById('btn-mic').disabled = true;
     document.getElementById('btn-mic').className = 'flex-1 flex items-center justify-center gap-2 bg-gray-800 text-gray-600 py-3.5 rounded-xl text-sm cursor-not-allowed';
   }
 
-  // Get initial message
+  // 첫 인사: 벨이 울리는 동안 미리 받아 둔 것을 쓴다
   showStatus('thinking');
   try {
-    const params = new URLSearchParams({
-      user_name: S.userName,
-      weather_info: S.weatherInfo,
-      user_schedule: S.schedule,
-      model: S.model,
-    });
-    const res = await fetch(`/api/initial-message?${params}`);
-    if (!res.ok) throw new Error((await res.json()).detail);
-    const data = await res.json();
+    const { message, user_content } = await (S.initialPromise || prefetchInitialMessage());
+    S.initialPromise = null;
     hideStatus();
-    addMessage('assistant', data.message);
-    S.conversationHistory.push({ role: 'assistant', content: data.message });
-    speakAndListen(data.message);
+    addMessage('assistant', message);
+    // 서버가 첫 인사를 만들 때 보낸 내용까지 기록해야 다음 턴에 프롬프트 캐시가 재사용된다
+    if (user_content) S.conversationHistory.push({ role: 'user', content: user_content });
+    S.conversationHistory.push({ role: 'assistant', content: message });
+    speakAndListen(message);
   } catch (e) {
+    S.initialPromise = null;
     hideStatus();
     // AI 호출 실패 원인을 숨기지 않고 보여준 뒤 기본 인사로 대체
     addMessage('assistant', `⚠️ AI 응답 실패: ${e.message}`);
@@ -544,74 +734,61 @@ async function acceptCall() {
 }
 
 // ─── TTS + STT Loop ───────────────────────────────────────────────────────────
+// AI가 말을 다 끝내면 듣기 시작 (통화를 끝낼 수 있는 상태면 듣지 않음)
+function beginSpeaking() {
+  Voice.stopSpeaking();
+  SpeechQueue.begin(() => {
+    S.isSpeaking = false;
+    hideStatus();
+    if (!S.alarmCanEnd) startListening();
+  });
+}
+
 function speakAndListen(text) {
-  if (!('speechSynthesis' in window)) {
-    // No TTS — go straight to listening
-    startListening();
-    return;
-  }
   showStatus('speaking');
   S.isSpeaking = true;
-  window.speechSynthesis.cancel();
+  beginSpeaking();
+  SpeechQueue.push(text);
+  SpeechQueue.close();
+}
 
-  const utter = new SpeechSynthesisUtterance(text);
-  utter.lang = 'ko-KR';
-  utter.rate = 1.05;
-  utter.pitch = 1.1;
-
-  // Try to find a Korean voice
-  const voices = window.speechSynthesis.getVoices();
-  const koVoice = voices.find(v => v.lang.startsWith('ko'));
-  if (koVoice) utter.voice = koVoice;
-
-  utter.onend = () => {
-    S.isSpeaking = false;
-    hideStatus();
-    if (!S.alarmCanEnd) startListening();
-  };
-  utter.onerror = () => {
-    S.isSpeaking = false;
-    hideStatus();
-    if (!S.alarmCanEnd) startListening();
-  };
-
-  window.speechSynthesis.speak(utter);
+function showTextInput() {
+  document.getElementById('text-input-area').classList.remove('hidden');
 }
 
 function startListening() {
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) {
-    document.getElementById('text-input-area').classList.remove('hidden');
-    return;
-  }
+  if (!Voice.canListen()) { showTextInput(); return; }
 
   showStatus('listening');
   S.isListening = true;
   document.getElementById('mic-icon').textContent = '🔴';
   document.getElementById('mic-label').textContent = '듣는 중...';
 
-  S.recognition = new SR();
-  S.recognition.lang = 'ko-KR';
-  S.recognition.interimResults = false;
-  S.recognition.maxAlternatives = 1;
-  S.recognition.continuous = false;
+  Voice.listen(
+    (transcript) => {
+      stopListening();
+      S.silentCount = 0;
+      handleUserSpeech(transcript);
+    },
+    (error) => {
+      stopListening();
+      if (error === 'no-speech') {
+        onSilence();
+      } else {
+        const reason = { 'not-allowed': '마이크 권한이 없어요', network: '음성 인식 서버에 연결할 수 없어요' }[error]
+          || '음성 인식에 실패했어요';
+        addNotice(`${reason}. 텍스트로 대답해 주세요.`);
+        showTextInput();
+      }
+    },
+  );
+}
 
-  S.recognition.onresult = (e) => {
-    const transcript = e.results[0][0].transcript;
-    stopListening();
-    handleUserSpeech(transcript);
-  };
-  S.recognition.onerror = (e) => {
-    stopListening();
-    if (e.error === 'no-speech') {
-      // Retry or show text input
-      document.getElementById('text-input-area').classList.remove('hidden');
-    }
-  };
-  S.recognition.onend = () => {
-    if (S.isListening) stopListening();
-  };
-  S.recognition.start();
+// 대답이 없으면 다시 잠든 것일 수 있으므로 AI가 먼저 다시 말을 건다
+function onSilence() {
+  if (S.alarmCanEnd || S.silentCount >= MAX_SILENT_NUDGES) { showTextInput(); return; }
+  S.silentCount += 1;
+  handleUserSpeech(SILENT_MESSAGE, { silent: true });
 }
 
 function stopListening() {
@@ -619,7 +796,16 @@ function stopListening() {
   hideStatus();
   document.getElementById('mic-icon').textContent = '🎤';
   document.getElementById('mic-label').textContent = '음성 입력';
-  try { if (S.recognition) S.recognition.stop(); } catch(e) {}
+  Voice.stopListening();
+}
+
+function addNotice(text) {
+  const el = document.getElementById('chat-messages');
+  const div = document.createElement('div');
+  div.className = 'text-center text-xs text-gray-500';
+  div.textContent = text;
+  el.appendChild(div);
+  scrollChat();
 }
 
 function toggleMic() {
@@ -653,16 +839,44 @@ function sendTextMessage() {
   handleUserSpeech(text);
 }
 
-async function handleUserSpeech(text) {
-  addMessage('user', text);
+async function handleUserSpeech(text, { silent = false } = {}) {
+  if (silent) addNotice('… 대답이 없어요');
+  else addMessage('user', text);
   S.conversationHistory.push({ role: 'user', content: text });
   showStatus('thinking');
+
+  // 서버가 답변을 구절 단위로 보내면, 첫 구절이 오자마자 말풍선을 띄우고 읽기 시작한다
+  let bubble = null;
+  const phrases = [];
+  beginSpeaking();
+  const onEvent = (ev) => {
+    if (ev.type === 'meta') {
+      // 서버가 실제로 모델에 보낸 내용으로 바꿔 저장해야 다음 턴에 서버의 프롬프트 캐시가 재사용된다
+      if (ev.user_content) S.conversationHistory[S.conversationHistory.length - 1].content = ev.user_content;
+      S.conversationLevel = ev.conversation_level;
+      S.alarmCanEnd = ev.alarm_can_end;
+      updateLevelIndicators(S.conversationLevel);
+      if (S.alarmCanEnd) enableEndCall();
+    } else if (ev.type === 'sentence') {
+      phrases.push(ev.text);
+      if (!bubble) {
+        bubble = addMessage('assistant', ev.text);
+        showStatus('speaking');
+        S.isSpeaking = true;
+      } else {
+        bubble.textContent = phrases.join(' ');
+        scrollChat();
+      }
+      SpeechQueue.push(ev.text);
+    } else if (ev.type === 'error') {
+      throw new Error(ev.detail);
+    }
+  };
 
   try {
     // Build history without the last user message (it's sent separately as `message`)
     const history = S.conversationHistory.slice(0, -1);
-
-    const res = await fetch('/api/chat', {
+    const res = await fetch(apiUrl('/api/chat/stream'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -675,56 +889,48 @@ async function handleUserSpeech(text) {
         model: S.model,
       }),
     });
-
     if (!res.ok) {
-      const err = await res.json();
+      const err = await res.json().catch(() => ({}));
       throw new Error(err.detail || '오류가 발생했습니다.');
     }
 
-    const data = await res.json();
-    hideStatus();
-
-    S.conversationLevel = data.conversation_level;
-    S.alarmCanEnd = data.alarm_can_end;
-    updateLevelIndicators(S.conversationLevel);
-
-    addMessage('assistant', data.reply);
-    S.conversationHistory.push({ role: 'assistant', content: data.reply });
-
-    if (S.alarmCanEnd) {
-      // Enable end call button
-      const btnEnd = document.getElementById('btn-end-call');
-      btnEnd.disabled = false;
-      btnEnd.className = 'flex-1 flex items-center justify-center gap-2 bg-red-600 hover:bg-red-500 py-3.5 rounded-xl text-sm font-semibold transition cursor-pointer';
-
-      speakThenEnd(data.reply);
-    } else {
-      speakAndListen(data.reply);
+    // 한 줄에 JSON 이벤트 하나 (NDJSON)
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newline;
+      while ((newline = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, newline).trim();
+        buffer = buffer.slice(newline + 1);
+        if (line) onEvent(JSON.parse(line));
+      }
     }
+    if (!phrases.length) throw new Error('AI 답변이 비어 있어요.');
+    S.conversationHistory.push({ role: 'assistant', content: phrases.join(' ') });
+    SpeechQueue.close();  // 다 읽으면 듣기 시작
   } catch (e) {
+    SpeechQueue.cancel();
+    S.isSpeaking = false;
     hideStatus();
-    const errMsg = `오류: ${e.message}`;
-    addMessage('assistant', errMsg);
+    addMessage('assistant', `오류: ${e.message}`);
+    showTextInput();
   }
 }
 
-function speakThenEnd(text) {
-  if (!('speechSynthesis' in window)) return;
-  showStatus('speaking');
-  window.speechSynthesis.cancel();
-  const utter = new SpeechSynthesisUtterance(text);
-  utter.lang = 'ko-KR'; utter.rate = 1.05; utter.pitch = 1.1;
-  const voices = window.speechSynthesis.getVoices();
-  const koVoice = voices.find(v => v.lang.startsWith('ko'));
-  if (koVoice) utter.voice = koVoice;
-  utter.onend = () => hideStatus();
-  window.speechSynthesis.speak(utter);
+function enableEndCall() {
+  const btnEnd = document.getElementById('btn-end-call');
+  btnEnd.disabled = false;
+  btnEnd.className = 'flex-1 flex items-center justify-center gap-2 bg-red-600 hover:bg-red-500 py-3.5 rounded-xl text-sm font-semibold transition cursor-pointer';
 }
 
 function endCall() {
   if (!S.alarmCanEnd) return;
   clearInterval(S.callTimerInterval);
-  window.speechSynthesis?.cancel();
+  Voice.stopSpeaking();
   stopListening();
 
   const now = new Date();
@@ -777,7 +983,8 @@ function resetApp() {
   clearInterval(S.alarmCheckInterval);
   clearInterval(S.clockInterval);
   stopRingSound();
-  window.speechSynthesis?.cancel();
+  Voice.stopSpeaking();
+  if (NATIVE) NATIVE.cancelAlarm();
   showView('setup');
 }
 
