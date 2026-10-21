@@ -338,6 +338,8 @@ SOFT_ISSUES = {"깨우는 중이라는 표현 없음", "너무 김"}
 PRESENCE_RE = re.compile(r"깨우|깨워|깨울|일어나|일어날|일어나요|눈.{0,3}떠|눈.{0,3}뜨|전화|모닝콜|알람|끊|목소리|옆에|함께|같이|"
                          r"이불|하품|하나\s?둘|수화기|창문")
 GIVEUP_RE = re.compile(r"더\s?주무|푹\s?주무|푹\s?자|잘\s?자요|더\s?자도|더\s?쉬|자도\s?(돼|괜찮)|쉬세요|그래도\s?괜찮|천천히\s?주무|누워\s?계세요|누워\s?있어도|더\s?누우|더\s?누워|더\s?계시|더\s?있어도|더\s?계셔도|더\s?잘\s?계|좀\s?더\s?주무|더\s?자요")
+# 소형 모델이 가끔 섞는 키릴·태국·아랍·그리스 문자 ("열 пятнадцать 분"). 지우면 말이 깨지므로 문제로 잡아 다시 생성한다
+FOREIGN_RE = re.compile(r"[\u0370-\u03FF\u0400-\u04FF\u0600-\u06FF\u0E00-\u0E7F]")
 # 문장 끝(문장부호 또는 끝)에서만 반말 어미를 본다
 BANMAL_RE = re.compile(r"(?:^|\s)(너를|너는|네가|너도|너의)\s|(?:^|\s)(떠|가|해|봐|와|자|일어나)(?:[!?.~]+|$)|[가-힣](야|니|지|자|어|아|나|가|해|봐|떠|워|와|져|쳐|라|래|냐|려|까|게|네|줘|데|거든|잖아|다구|구나)(?:[!?.~]+|$)|"
                        r"[가-힣](?<!니)(?<!까)다(?:[!?.~]+|$)|잖아,|[가-힣]야,")
@@ -378,8 +380,9 @@ def reply_issues(reply: str, user_msg: str, stage: int, first: bool, previous: l
         issues.append("포기 발언")
     if not reply or len(reply) < 8:
         issues.append("너무 짧음")
-    if re.search(r"[A-Za-z]{2,}", reply) or re.search(r"\s(을|를|로|은|는|에|의)\s|시\s분", " " + reply):
-        issues.append("영어 또는 깨진 조사")
+    if re.search(r"[A-Za-z]{2,}", reply) or FOREIGN_RE.search(reply) or \
+            re.search(r"\s(을|를|로|은|는|에|의)\s|시\s분", " " + reply):
+        issues.append("외국어 또는 깨진 조사")
     if BANMAL_RE.search(reply):
         issues.append("반말")
     if len(reply) > 110:
@@ -468,7 +471,7 @@ def call_ollama(model: str, system: str, messages: list) -> str:
 # 말하는 속도(약 6음절/초)보다 훨씬 빠르므로, 첫 문장만 기다렸다가 읽기 시작해도 중간에 끊기지 않는다.
 MAX_SENTENCES = 3
 # 문장 단위에서도 걸러야 하는 문제. 길이·깨우는 표현 같은 답변 전체 기준 검사는 제외
-SENTENCE_ISSUES = {"반말", "영어 또는 깨진 조사", "포기 발언", "이전 답변 반복", "사용자 말 따라 하기", "반복 인사"}
+SENTENCE_ISSUES = {"반말", "외국어 또는 깨진 조사", "포기 발언", "이전 답변 반복", "사용자 말 따라 하기", "반복 인사"}
 SENTENCE_END_RE = re.compile(r"[.!?~…]+[\"')\]]*\s")
 # 사람처럼 "아하," "에이," 정도에서 바로 말을 시작하도록 쉼표에서도 끊는다 (너무 짧은 조각은 붙여서)
 PHRASE_END_RE = re.compile(r"(?:[.!?~…]+[\"')\]]*|,)\s")
