@@ -11,3 +11,5 @@ build/
 .DS_Store
 Thumbs.db
 *.log
+# 텔레메트리·프로파일 DB (사용자 대화 원문이 들어 있다)
+data/

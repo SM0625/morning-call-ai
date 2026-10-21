@@ -366,10 +366,10 @@ const Voice = {
   canListen() {
     return !!NATIVE || 'SpeechRecognition' in window || 'webkitSpeechRecognition' in window;
   },
-  // onResult(텍스트), onError('no-speech' | 'not-allowed' | 'network' | 'error')
-  listen(onResult, onError) {
+  // onResult(텍스트), onError('no-speech' | 'not-allowed' | 'network' | 'error'), onSpeechStart(): 말소리를 처음 들었을 때
+  listen(onResult, onError, onSpeechStart = () => {}) {
     if (NATIVE) {
-      S.onNativeSpeech = { onResult, onError };
+      S.onNativeSpeech = { onResult, onError, onSpeechStart };
       NATIVE.startListening();
       return;
     }
@@ -383,7 +383,9 @@ const Voice = {
     let latest = '';
     let quietTimer = null;
     const finish = (fn) => { if (finished) return; finished = true; clearTimeout(quietTimer); fn(); };
+    S.recognition.onspeechstart = () => onSpeechStart();
     S.recognition.onresult = (e) => {
+      onSpeechStart();  // onspeechstart를 주지 않는 브라우저도 있다 (두 번 불려도 처음 것만 쓴다)
       latest = Array.from(e.results).map(r => r[0].transcript).join('');
       if (e.results[e.results.length - 1].isFinal) { finish(() => onResult(latest)); return; }
       // 중간 결과가 잠시 그대로면 기본 침묵 대기(1~2초)를 기다리지 않고 바로 끝낸다
@@ -399,7 +401,7 @@ const Voice = {
     S.onNativeSpeech = null;
     if (NATIVE) { NATIVE.stopListening(); return; }
     if (S.recognition) {
-      S.recognition.onresult = S.recognition.onerror = S.recognition.onend = null;
+      S.recognition.onresult = S.recognition.onerror = S.recognition.onend = S.recognition.onspeechstart = null;
       try { S.recognition.stop(); } catch (e) {}
     }
   },
@@ -445,6 +447,9 @@ window.onNativeSpeechError = (code) => {
   S.onNativeSpeech = null;
   if (h) h.onError(code);
 };
+window.onNativeSpeechStart = () => S.onNativeSpeech?.onSpeechStart();
+// 통화 후 행동 측정(WakeMonitor)이 끝났을 때. 앱이 꺼져 있었으면 다음에 켤 때 flushWakeReports가 보낸다
+window.onNativeWakeReport = () => flushWakeReports();
 // 안드로이드 알람이 울려 앱이 열렸을 때. 앱이 꺼져 있다가 켜졌을 수 있으므로 저장된 설정을 다시 읽는다.
 window.onNativeAlarm = () => {
   loadSaved();
@@ -452,6 +457,202 @@ window.onNativeAlarm = () => {
   S.weatherPromise = fetchWeather();
   triggerAlarm();
 };
+
+// ─── 텔레메트리 (사용자 데이터 수집) ───────────────────────────────────────────
+// 통화가 끝나면 대화 기록과 대답 지연 시간을 보내고(call_end), 그 뒤 5분 동안의 행동을 따로 보낸다(post_wake).
+// 둘은 session_id로 묶인다. 전송에 실패하면 저장해 두었다가 앱을 다시 열 때 보낸다. 통화 흐름에는 영향을 주지 않는다.
+const TELEMETRY_PATH = '/api/v1/telemetry';
+const POST_WAKE_WINDOW_SEC = 300;          // 통화 후 행동을 지켜보는 시간
+const TELEMETRY_OUTBOX_KEY = 'mc_telemetry_outbox';
+const TELEMETRY_OUTBOX_MAX = 20;
+
+function newId() {
+  // randomUUID는 https·localhost에서만 있다 (폰에서 http://PC주소 로 열면 없음)
+  return window.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+// 기기마다 한 번 만드는 익명 ID. 이름이 같은 사용자도 프로파일이 섞이지 않는다
+function userId() {
+  let id = localStorage.getItem('mc_user_id');
+  if (!id) { id = newId(); localStorage.setItem('mc_user_id', id); }
+  return id;
+}
+
+const toSec = (ms) => Math.round(ms / 10) / 100;
+
+function telemetryEnvelope(event, sessionId) {
+  return {
+    event, user_id: userId(), session_id: sessionId,
+    client: NATIVE ? 'android' : 'web',
+    sent_at: new Date().toISOString(),
+    tz_offset_min: -new Date().getTimezoneOffset(),
+  };
+}
+
+async function postTelemetry(payload) {
+  const res = await fetch(apiUrl(TELEMETRY_PATH), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    // 브라우저에서 탭을 닫는 중에도 끝까지 보낸다. 앱(file://)에서는 다른 출처 요청이라 keepalive를 쓰지 않는다
+    keepalive: !NATIVE,
+  });
+  if (!res.ok) {
+    const err = new Error(`텔레메트리 전송 실패 (${res.status})`);
+    err.status = res.status;
+    throw err;
+  }
+}
+
+function readOutbox() {
+  try { return JSON.parse(localStorage.getItem(TELEMETRY_OUTBOX_KEY)) || []; } catch { return []; }
+}
+
+function sendTelemetry(payload) {
+  return postTelemetry(payload).catch((e) => {
+    // 형식 오류(422 등)는 다시 보내도 실패하므로 버린다. 404는 서버가 아직 이 API를 모를 때라 다시 보낸다
+    if (e.status && e.status < 500 && e.status !== 404) return;
+    const box = readOutbox();
+    box.push(payload);
+    localStorage.setItem(TELEMETRY_OUTBOX_KEY, JSON.stringify(box.slice(-TELEMETRY_OUTBOX_MAX)));
+  });
+}
+
+function flushTelemetryOutbox() {
+  const box = readOutbox();
+  if (!box.length) return;
+  localStorage.removeItem(TELEMETRY_OUTBOX_KEY);
+  box.forEach(sendTelemetry);
+}
+
+// 한 통화의 대화 기록. 대답 지연 시간 = AI가 말을 다 끝낸 시점 ~ 사용자가 말하기 시작한 시점
+const CallTelemetry = {
+  call: null,
+  start() {
+    this.call = { session_id: newId(), started: Date.now(), utterances: [], aiDoneAt: null, speechAt: null };
+  },
+  markAiDone() {
+    if (!this.call) return;
+    this.call.aiDoneAt = performance.now();
+    this.call.speechAt = null;
+  },
+  markSpeechStart() {
+    const c = this.call;
+    if (c && c.aiDoneAt != null && c.speechAt == null) c.speechAt = performance.now();
+  },
+  // input: 'voice' | 'text' | 'silent'. 지연 시간은 음성으로 대답했을 때만 잰다 (입력은 타자 속도가 섞인다)
+  record(text, input) {
+    const c = this.call;
+    if (!c) return;
+    const latency = input === 'voice' && c.aiDoneAt != null && c.speechAt != null
+      ? toSec(c.speechAt - c.aiDoneAt) : null;
+    // 어떤 말투에 어떻게 반응했는지 보려고 직전 AI 말을 같이 남긴다 (서버가 효과적인 톤을 분석할 때 쓴다)
+    const aiBefore = [...S.conversationHistory].reverse().find(m => m.role === 'assistant')?.content || '';
+    c.utterances.push({
+      text: input === 'silent' ? '' : text, input, latency_sec: latency, ai_before: aiBefore,
+      stage_before: S.conversationLevel, at_sec: toSec(Date.now() - c.started),
+    });
+    c.aiDoneAt = c.speechAt = null;
+  },
+  // endedBy: 'button'(통화 종료 버튼) | 'closed'(통화 중에 앱·탭을 닫음). 보낸 통화의 session_id를 돌려준다
+  finish(endedBy) {
+    const c = this.call;
+    if (!c) return null;
+    this.call = null;
+    const latencies = c.utterances.map(u => u.latency_sec).filter(v => v != null);
+    sendTelemetry({
+      ...telemetryEnvelope('call_end', c.session_id),
+      user_name: S.userName,
+      model: S.model,
+      alarm_time: localStorage.getItem('mc_time') || S.alarmTime,  // 스누즈로 바뀌기 전 원래 알람 시각
+      call: {
+        started_at: new Date(c.started).toISOString(),
+        ended_at: new Date().toISOString(),
+        duration_sec: toSec(Date.now() - c.started),
+        ended_by: endedBy,
+        reached_end: S.alarmCanEnd,  // AI가 다 일어났다고 판단했는지
+        final_stage: S.conversationLevel,
+        snooze_count: Number(localStorage.getItem('mc_snooze_count') || 0),
+        turn_count: c.utterances.length,
+        silent_count: c.utterances.filter(u => u.input === 'silent').length,
+        latency_avg_sec: latencies.length ? toSec(latencies.reduce((a, b) => a + b, 0) * 1000 / latencies.length) : null,
+        latency_max_sec: latencies.length ? Math.max(...latencies) : null,
+        utterances: c.utterances,
+      },
+    });
+    localStorage.removeItem('mc_snooze_count');
+    return c.session_id;
+  },
+};
+
+// 통화 후 행동: 앱에서는 안드로이드가 걸음 수·화면·앱 전환을 재고(WakeMonitor.kt), 브라우저는 탭이 가려진 것만 잰다
+function startWakeMonitor(sessionId) {
+  if (NATIVE) NATIVE.startWakeMonitor(sessionId, POST_WAKE_WINDOW_SEC);
+  else WebWakeMonitor.start(sessionId, POST_WAKE_WINDOW_SEC);
+}
+
+// 안드로이드가 재 둔 결과를 꺼내 보낸다 (측정이 끝났을 때와 앱을 열 때)
+function flushWakeReports() {
+  if (!NATIVE) return;
+  let reports = [];
+  try { reports = JSON.parse(NATIVE.takeWakeReports()); } catch {}
+  reports.forEach(({ session_id, ...behavior }) =>
+    sendTelemetry({ ...telemetryEnvelope('post_wake', session_id), behavior }));
+}
+
+// 브라우저는 걸음 수와 화면 켜짐을 알 수 없어, 탭이 가려진 것(다른 탭·앱으로 넘어감 또는 화면 꺼짐)만 잰다.
+// 안드로이드와 같은 항목 이름을 쓰고, 잴 수 없는 항목은 null로 보낸다
+const WebWakeMonitor = {
+  m: null,
+  start(sessionId, seconds) {
+    this.finish();
+    const now = Date.now();
+    const m = this.m = {
+      sessionId, seconds, started: now, visibleSince: document.hidden ? null : now,
+      visibleMs: 0, leftCount: 0, firstLeftMs: null, timer: null, onChange: null,
+    };
+    m.onChange = () => {
+      const t = Date.now();
+      if (document.hidden) {
+        if (m.visibleSince != null) { m.visibleMs += t - m.visibleSince; m.visibleSince = null; }
+        m.leftCount += 1;
+        if (m.firstLeftMs == null) m.firstLeftMs = t - m.started;
+      } else if (m.visibleSince == null) {
+        m.visibleSince = t;
+      }
+    };
+    document.addEventListener('visibilitychange', m.onChange);
+    // 탭이 가려져 있으면 타이머가 늦게 불릴 수 있다 (window_sec에는 실제로 잰 시간이 들어간다)
+    m.timer = setTimeout(() => this.finish(), seconds * 1000);
+  },
+  finish() {
+    const m = this.m;
+    if (!m) return;
+    this.m = null;
+    clearTimeout(m.timer);
+    document.removeEventListener('visibilitychange', m.onChange);
+    const now = Date.now();
+    const elapsed = now - m.started;
+    sendTelemetry({
+      ...telemetryEnvelope('post_wake', m.sessionId),
+      behavior: {
+        window_sec: toSec(elapsed),
+        complete: elapsed >= m.seconds * 1000,
+        step_sensor: false, steps: null,
+        screen_on_sec: null, screen_off_count: null, first_screen_off_sec: null, unlock_count: null,
+        foreground_sec: toSec(m.visibleMs + (m.visibleSince != null ? now - m.visibleSince : 0)),
+        app_left_count: m.leftCount,
+        first_app_left_sec: m.firstLeftMs == null ? null : toSec(m.firstLeftMs),
+      },
+    });
+  },
+};
+
+// 탭을 닫으면 지금까지 모은 것이라도 보낸다 (통화 중이었으면 ended_by: 'closed')
+window.addEventListener('pagehide', () => {
+  CallTelemetry.finish('closed');
+  WebWakeMonitor.finish();
+});
 
 // ─── Utility ──────────────────────────────────────────────────────────────────
 function showView(name) {
@@ -551,6 +752,7 @@ function applySettings() {
 
 function startAlarm() {
   if (!applySettings()) return;
+  localStorage.removeItem('mc_snooze_count');
   showView('standby');
   startClock();
   S.weatherPromise = fetchWeather();
@@ -609,6 +811,7 @@ function startAlarmCheck() {
 function userParams() {
   return new URLSearchParams({
     user_name: S.userName, user_schedule: S.schedule, weather_info: S.weatherInfo, model: S.model,
+    user_id: userId(),  // 서버가 이 사용자의 프로파일을 시스템 프롬프트에 넣는다
   });
 }
 
@@ -668,6 +871,7 @@ function stopRingSound() {
 // ─── Call Flow ────────────────────────────────────────────────────────────────
 function declineCall() {
   stopRingSound();
+  localStorage.setItem('mc_snooze_count', String(Number(localStorage.getItem('mc_snooze_count') || 0) + 1));
   // Re-snooze: check alarm again in 5 minutes
   S.alarmTime = (() => {
     const d = new Date(); d.setMinutes(d.getMinutes() + 5);
@@ -688,6 +892,7 @@ async function acceptCall() {
   S.conversationLevel = 0;
   S.alarmCanEnd = false;
   S.silentCount = 0;
+  CallTelemetry.start();
 
   // Disable end call button
   const btnEnd = document.getElementById('btn-end-call');
@@ -740,7 +945,9 @@ function beginSpeaking() {
   SpeechQueue.begin(() => {
     S.isSpeaking = false;
     hideStatus();
-    if (!S.alarmCanEnd) startListening();
+    if (S.alarmCanEnd) return;
+    CallTelemetry.markAiDone();  // 여기부터 사용자가 말을 시작할 때까지가 대답 지연 시간
+    startListening();
   });
 }
 
@@ -781,6 +988,7 @@ function startListening() {
         showTextInput();
       }
     },
+    () => CallTelemetry.markSpeechStart(),
   );
 }
 
@@ -836,10 +1044,11 @@ function sendTextMessage() {
   if (!text) return;
   inp.value = '';
   stopListening();
-  handleUserSpeech(text);
+  handleUserSpeech(text, { input: 'text' });
 }
 
-async function handleUserSpeech(text, { silent = false } = {}) {
+async function handleUserSpeech(text, { silent = false, input = 'voice' } = {}) {
+  CallTelemetry.record(text, silent ? 'silent' : input);
   if (silent) addNotice('… 대답이 없어요');
   else addMessage('user', text);
   S.conversationHistory.push({ role: 'user', content: text });
@@ -887,6 +1096,7 @@ async function handleUserSpeech(text, { silent = false } = {}) {
         weather_info: S.weatherInfo,
         conversation_level: S.conversationLevel,
         model: S.model,
+        user_id: userId(),
       }),
     });
     if (!res.ok) {
@@ -932,6 +1142,8 @@ function endCall() {
   clearInterval(S.callTimerInterval);
   Voice.stopSpeaking();
   stopListening();
+  const sessionId = CallTelemetry.finish('button');
+  if (sessionId) startWakeMonitor(sessionId);
 
   const now = new Date();
   document.getElementById('done-time').textContent =
@@ -990,6 +1202,9 @@ function resetApp() {
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 loadSaved();
+// 지난번에 보내지 못한 텔레메트리와, 앱이 꺼져 있는 동안 끝난 통화 후 행동 측정 결과를 보낸다
+flushTelemetryOutbox();
+flushWakeReports();
 
 // Load voices async (some browsers need this)
 if ('speechSynthesis' in window) {

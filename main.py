@@ -5,6 +5,7 @@ import logging
 import random
 import time
 import ollama
+import telemetry
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
@@ -44,6 +45,7 @@ class ChatRequest(BaseModel):
     weather_info: Optional[str] = ""
     conversation_level: int = 0
     model: Optional[str] = None
+    user_id: Optional[str] = ""  # 프로파일을 찾는 익명 ID (static/index.html의 userId())
 
 
 class ChatResponse(BaseModel):
@@ -140,7 +142,83 @@ def build_turn_directive(
     return f"\n\n[지시]{now} 유형: {STATE_LABELS.get(state, '딴 얘기')} / 단계: {STAGE_LABELS[stage]}{presence}"
 
 
-def build_system_prompt(user_name: str, user_schedule: str, weather_info: str) -> str:
+# ─── 사용자 프로파일 주입 (telemetry.py가 지난 아침 기록으로 만든 것) ─────────────────
+# 말투 이름(telemetry.TONES)마다 어떻게 깨우는지. 프로파일에는 이름만 있으므로 여기서 구체적인 지시로 바꾼다
+TONE_GUIDES = {
+    "다정하게 달래기": "부드럽게 공감하며 달래듯 깨우기",
+    "장난스럽게 놀리기": "가볍게 놀리며 웃게 만들어 깨우기",
+    "단호하게 재촉하기": "짧고 단호하게 지금 당장 일어나라고 하기",
+    "일정으로 현실 일깨우기": "오늘 일정과 남은 시간을 구체적으로 들어 현실을 일깨우기",
+    "칭찬으로 북돋기": "작은 행동도 크게 칭찬하며 북돋기",
+}
+assert set(TONE_GUIDES) == set(telemetry.TONES)
+MIN_SESSIONS_FOR_TONE = 3  # 기록이 이보다 적으면 말투 분석을 믿기 어려워 넣지 않는다
+
+
+def days_ago(date: str) -> str:
+    try:
+        n = (datetime.now().date() - datetime.fromisoformat(date).date()).days
+    except ValueError:
+        return date
+    return {0: "오늘", 1: "어제", 2: "그저께"}.get(n, f"{n}일 전")
+
+
+def build_profile_context(profile: Optional[dict], user_name: str) -> str:
+    """프로파일을 시스템 프롬프트 맨 앞에 넣을 문단으로 만든다. 프로파일이 없으면 빈 문자열 (지금과 같은 프롬프트)"""
+    if not profile:
+        return ""
+    name = user_name or profile.get("user_name") or "사용자"
+    stats = profile.get("stats") or {}
+    lines = []
+    if stats.get("sessions"):
+        streak = stats.get("streak") or {}
+        line = f"- 최근 {stats['sessions']}번 아침 중 {stats.get('successes', 0)}번 제대로 일어났어요."
+        if streak.get("count", 0) >= 2:
+            line += f" 지금 {streak['count']}번 연속 {'성공' if streak['type'] == 'success' else '실패'} 중이에요."
+        lines.append(line)
+    failures = profile.get("recent_failures") or []
+    if failures:
+        last = failures[0]
+        lines.append(f"- 최근 실패: {days_ago(last.get('date', ''))} — {last.get('reason', '')}.")
+        if "다시 잠든" in last.get("reason", ""):
+            lines.append("- 통화를 끊고 다시 잠든 적이 있으니, 침대에서 나왔다고 할 때까지 확실히 확인하세요.")
+    if stats.get("sessions", 0) >= MIN_SESSIONS_FOR_TONE:
+        good, bad = profile.get("effective_tone"), profile.get("ineffective_tone")
+        if good in TONE_GUIDES:
+            lines.append(f"- 잘 통한 방식: {TONE_GUIDES[good]}. 이 방식을 중심으로 깨우세요.")
+        if bad in TONE_GUIDES and bad != good:
+            lines.append(f"- 잘 안 통한 방식: {TONE_GUIDES[bad]}. 이 방식은 줄이세요.")
+    excuses = profile.get("excuse_keywords") or []
+    if excuses:
+        lines.append(f"- 자주 대는 핑계: {', '.join(excuses)}. 이 핑계가 나오면 미리 알고 있었다는 듯 받아치세요.")
+    memories = profile.get("long_term_memory") or []
+    if memories:
+        lines.append(f"- 기억해 둘 것: {', '.join(memories)}. 어울릴 때 한 번만 안부처럼 꺼내세요.")
+    if not lines:
+        return ""
+    return f"## {name}님에 대해 알고 있는 것 (지난 아침 기록)\n" + "\n".join(lines) + "\n\n"
+
+
+# 통화 중에는 프로파일이 갱신돼도 처음 읽은 것을 그대로 쓴다.
+# 시스템 프롬프트가 한 글자라도 바뀌면 Ollama 캐시가 깨져 매 턴 첫 소리가 1초 이상 늦어진다
+_call_profiles: dict = {}
+
+
+def profile_context(user_id: str, user_name: str, refresh: bool = False) -> str:
+    """refresh=True(예열·첫 인사)일 때 DB에서 새로 읽고, 대화 턴에서는 그 통화에서 읽은 것을 쓴다"""
+    if not user_id:
+        return ""
+    key = (user_id, user_name)
+    if refresh or key not in _call_profiles:
+        try:
+            _call_profiles[key] = build_profile_context(telemetry.load_profile(user_id), user_name)
+        except Exception:
+            log.exception("프로파일 읽기 실패 — 프로파일 없이 진행합니다")
+            _call_profiles[key] = ""
+    return _call_profiles[key]
+
+
+def build_system_prompt(user_name: str, user_schedule: str, weather_info: str, profile: str = "") -> str:
     # 통화 중 바뀌지 않는 내용만 넣어 Ollama가 이 프롬프트의 처리 결과를 재사용하게 한다
     day_names = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
     day_name = day_names[datetime.now().weekday()]
@@ -152,7 +230,7 @@ def build_system_prompt(user_name: str, user_schedule: str, weather_info: str) -
         f"- {STAGE_LABELS[n]}: {g.format(schedule=schedule, weather=weather)}" for n, g in STAGE_GOALS.items()
     )
 
-    return f"""당신은 {user_name}님을 매일 아침 전화로 깨워 주는 다정하고 끈기 있는 모닝콜 친구입니다.
+    return f"""{profile}당신은 {user_name}님을 매일 아침 전화로 깨워 주는 다정하고 끈기 있는 모닝콜 친구입니다.
 지금 알람 시간이 되어 {user_name}님에게 전화를 걸었고, 통화가 연결된 상태입니다.
 당신의 임무는 {user_name}님이 침대에서 완전히 나올 때까지 전화를 끊지 않고 깨우는 것입니다.
 
@@ -566,9 +644,11 @@ def prepare_turn(request: ChatRequest):
     state = classify_user_state(request.message)
     log.debug("분류 %s | %s", state, request.message)
     stage = next_stage(max(0, min(request.conversation_level, LAST_STAGE)), state)
+    telemetry.note_call_activity()
 
     system_prompt = build_system_prompt(
-        request.user_name, request.user_schedule, request.weather_info
+        request.user_name, request.user_schedule, request.weather_info,
+        profile_context(request.user_id, request.user_name),
     )
     directive = build_turn_directive(
         request.user_schedule, request.weather_info, stage, state, last_ai,
@@ -630,8 +710,11 @@ def chat_stream(request: ChatRequest):
     return StreamingResponse(events(), media_type="application/x-ndjson")
 
 
-def initial_turn(user_name: str, user_schedule: str, weather_info: str):
-    system_prompt = build_system_prompt(user_name, user_schedule, weather_info)
+def initial_turn(user_name: str, user_schedule: str, weather_info: str, user_id: str = ""):
+    # 알람이 울릴 때 최신 프로파일을 읽고, 이 통화가 끝날 때까지 그대로 쓴다
+    telemetry.note_call_activity()
+    profile = profile_context(user_id, user_name, refresh=True)
+    system_prompt = build_system_prompt(user_name, user_schedule, weather_info, profile)
     prompt = "(알람이 울려 방금 전화를 걸었습니다. 첫 인사를 해 주세요.)" + build_turn_directive(
         user_schedule, weather_info, stage=0, ask_time=True
     )
@@ -644,8 +727,9 @@ def initial_message(
     weather_info: str = "",
     user_schedule: str = "",
     model: str = None,
+    user_id: str = "",
 ):
-    system_prompt, messages = initial_turn(user_name, user_schedule, weather_info)
+    system_prompt, messages = initial_turn(user_name, user_schedule, weather_info, user_id)
     model = model or DEFAULT_MODEL
     reply = generate_reply(model, system_prompt, messages, "", stage=0, user_name=user_name, first=True)
     # 첫 인사를 다시 생성했거나 다듬었으면 Ollama 캐시에 남은 내용이 실제 대화 기록과 달라, 첫 대답이 약 2초 늦어진다.
@@ -660,11 +744,15 @@ def initial_message(
 
 
 @app.post("/api/warmup")
-def warmup(model: str = None, user_name: str = "", user_schedule: str = "", weather_info: str = ""):
+def warmup(model: str = None, user_name: str = "", user_schedule: str = "", weather_info: str = "",
+           user_id: str = ""):
     # 알람 직전에 모델을 메모리에 올린다. 사용자 정보가 있으면 실제 시스템 프롬프트를 미리 처리해 두어
     # 첫 인사와 첫 대답에서 프롬프트 처리(약 1.8초)를 Ollama 캐시로 건너뛰게 한다.
+    telemetry.note_call_activity()
     try:
-        system = build_system_prompt(user_name, user_schedule, weather_info) if user_name else ""
+        system = build_system_prompt(
+            user_name, user_schedule, weather_info, profile_context(user_id, user_name, refresh=True)
+        ) if user_name else ""
         messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": "안녕"}]
         ollama_chat(model or DEFAULT_MODEL, messages, {"num_predict": 1})
         return {"ok": True}
@@ -681,6 +769,10 @@ async def list_models():
     except Exception:
         return {"models": []}
 
+
+# 텔레메트리 수신과 사용자 프로파일 (telemetry.py). 분류·생성과 같은 GPU 설정으로 Ollama를 부르게 한다
+telemetry.init(ollama_chat, DEFAULT_MODEL)
+app.include_router(telemetry.router)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 

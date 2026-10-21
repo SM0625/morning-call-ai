@@ -65,7 +65,19 @@ class MainActivity : Activity() {
         setupTts()
         consumeAlarmExtra(intent)
         requestNeededPermissions()
+        // 통화 후 행동 측정이 끝나면 웹 화면이 결과를 가져가 서버로 보낸다
+        WakeMonitor.onReport = { js("window.onNativeWakeReport && window.onNativeWakeReport()") }
         web.loadUrl("file:///android_asset/index.html")
+    }
+
+    override fun onStart() {
+        super.onStart()
+        WakeMonitor.onAppVisible(this, true)
+    }
+
+    override fun onStop() {
+        WakeMonitor.onAppVisible(this, false)
+        super.onStop()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -75,6 +87,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        WakeMonitor.onReport = null  // 측정은 앱 Context에서 계속되고, 결과는 저장해 두었다가 다음에 가져간다
         tts?.shutdown()
         recognizer?.destroy()
         if (isFinishing) Ringer.stop(this)
@@ -211,7 +224,8 @@ class MainActivity : Activity() {
         }
 
         override fun onReadyForSpeech(params: Bundle?) {}
-        override fun onBeginningOfSpeech() {}
+        // 대답 지연 시간(AI가 말을 끝낸 뒤 사용자가 말하기 시작할 때까지)을 재기 위해 알린다
+        override fun onBeginningOfSpeech() = js("window.onNativeSpeechStart && window.onNativeSpeechStart()")
         override fun onRmsChanged(rmsdB: Float) {}
         override fun onBufferReceived(buffer: ByteArray?) {}
         override fun onEndOfSpeech() {}
@@ -271,6 +285,8 @@ class MainActivity : Activity() {
     private fun requestNeededPermissions() {
         val needed = mutableListOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.ACCESS_COARSE_LOCATION)
         if (Build.VERSION.SDK_INT >= 33) needed += Manifest.permission.POST_NOTIFICATIONS
+        // 통화 후 걸음 수 측정 (거절해도 다른 기능은 그대로 동작한다)
+        if (Build.VERSION.SDK_INT >= 29) needed += Manifest.permission.ACTIVITY_RECOGNITION
         val missing = needed.filterNot { hasPermission(it) }
         if (missing.isNotEmpty()) requestPermissions(missing.toTypedArray(), REQ_PERMISSIONS)
 
@@ -324,5 +340,14 @@ class MainActivity : Activity() {
 
         @JavascriptInterface
         fun stopRinging() = Ringer.stop(this@MainActivity)
+
+        /** 통화 후 seconds초 동안 걸음 수·화면·앱 전환을 잰다. 끝나면 window.onNativeWakeReport() */
+        @JavascriptInterface
+        fun startWakeMonitor(sessionId: String, seconds: Int) =
+            runOnUiThread { WakeMonitor.start(this@MainActivity, sessionId, seconds) }
+
+        /** 측정이 끝난 결과들(JSON 배열 문자열)을 꺼낸다. 꺼낸 결과는 지워진다 */
+        @JavascriptInterface
+        fun takeWakeReports(): String = WakeMonitor.takeReports(this@MainActivity)
     }
 }

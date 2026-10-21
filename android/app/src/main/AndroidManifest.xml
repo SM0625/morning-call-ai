@@ -7,6 +7,8 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- 날씨 (거친 위치면 충분) -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- 통화 후 걸음 수 (기상 후 실제로 움직였는지) -->
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
     <!-- 알람: 정확한 시각에 울리고, 잠금화면 위에 전화 화면 띄우기 -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
