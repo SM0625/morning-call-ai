@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>통화 기록</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
+    * { font-family: 'Noto Sans KR', sans-serif; }
+    details > summary { list-style: none; cursor: pointer; }
+    details > summary::-webkit-details-marker { display: none; }
+    details[open] .chevron { transform: rotate(90deg); }
+  </style>
+</head>
+<body class="bg-gray-950 text-white min-h-screen">
+<div class="max-w-3xl mx-auto px-4 py-8">
+  <div class="flex items-end justify-between gap-4 mb-6">
+    <div>
+      <h1 class="text-2xl font-bold text-indigo-400">통화 기록</h1>
+      <p id="db-path" class="text-xs text-gray-500 mt-1 font-mono break-all"></p>
+    </div>
+    <button onclick="load()" class="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded-xl text-sm transition flex-shrink-0">새로고침</button>
+  </div>
+  <div id="content" class="space-y-10"><p class="text-gray-500 text-sm">불러오는 중…</p></div>
+</div>
+
+<script>
+// 텍스트는 모두 textContent로 넣는다 (대화 원문에 HTML이 섞여 있어도 그대로 글자로 보이게)
+function el(tag, cls = '', text = null, children = []) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text != null) node.textContent = text;
+  children.forEach(c => c && node.appendChild(c));
+  return node;
+}
+
+const fmtSec = (s) => {
+  if (s == null) return '-';
+  const r = Math.round(s);  // 먼저 반올림해야 119.6초가 "1분 60초"가 되지 않는다
+  return r < 60 ? `${r}초` : `${Math.floor(r / 60)}분 ${r % 60}초`;
+};
+// 소리는 들렸지만 글자를 못 알아들은 대답 (이전 버전에서는 빈 메시지로 저장됐다)
+const isUnheard = (u) => u.input === 'voice' && !u.text;
+const fmtDate = (iso) => {
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleString('ko-KR', { month: 'long', day: 'numeric', weekday: 'short', hour: '2-digit', minute: '2-digit' });
+};
+
+function chip(text, tone = 'gray') {
+  const tones = {
+    gray: 'bg-gray-800 text-gray-300', indigo: 'bg-indigo-900/60 text-indigo-200',
+    green: 'bg-green-900/50 text-green-300', red: 'bg-red-900/50 text-red-300', amber: 'bg-amber-900/40 text-amber-200',
+  };
+  return el('span', `inline-block rounded-full px-2.5 py-0.5 text-xs ${tones[tone]}`, text);
+}
+
+function stat(label, value) {
+  return el('div', 'bg-gray-900 border border-gray-800 rounded-xl px-3 py-2', null, [
+    el('div', 'text-[11px] text-gray-500', label), el('div', 'text-sm font-medium', value),
+  ]);
+}
+
+function profileCard(profile) {
+  if (!profile) {
+    return el('div', 'bg-gray-900 border border-gray-800 rounded-2xl p-4 text-sm text-gray-500',
+      '아직 프로파일이 없어요. 통화가 끝나고 1분쯤 지나면 만들어집니다.');
+  }
+  const rows = [];
+  const row = (label, content) => rows.push(el('div', 'flex gap-3 text-sm', null, [
+    el('div', 'w-24 flex-shrink-0 text-gray-500', label), content,
+  ]));
+  if (profile.effective_tone) row('잘 통한 말투', chip(profile.effective_tone, 'green'));
+  if (profile.ineffective_tone) row('안 통한 말투', chip(profile.ineffective_tone, 'red'));
+  if (profile.tone_evidence) row('근거', el('div', 'text-gray-300', profile.tone_evidence));
+  if (profile.excuse_keywords?.length)
+    row('자주 대는 핑계', el('div', 'flex flex-wrap gap-1.5', null, profile.excuse_keywords.map(k => chip(k, 'amber'))));
+  if (profile.long_term_memory?.length)
+    row('기억해 둘 것', el('div', 'flex flex-wrap gap-1.5', null, profile.long_term_memory.map(k => chip(k, 'indigo'))));
+  const fail = profile.recent_failures?.[0];
+  if (fail) row('최근 실패', el('div', 'text-gray-300', `${fail.date} · ${fail.reason}`));
+  if (!rows.length) rows.push(el('div', 'text-sm text-gray-500', '분석할 대답이 아직 부족해요.'));
+  return el('div', 'bg-gray-900 border border-indigo-900/60 rounded-2xl p-4 space-y-2.5', null, [
+    el('div', 'flex items-center justify-between mb-1', null, [
+      el('div', 'text-xs font-semibold text-indigo-300', 'AI가 다음 알람에 쓰는 프로파일'),
+      el('div', 'text-[11px] text-gray-600', `갱신 ${profile.updated_at ? fmtDate(profile.updated_at) : '-'}`),
+    ]),
+    ...rows,
+  ]);
+}
+
+function behaviorText(b) {
+  if (!b) return '통화 후 행동: 아직 기록 없음 (통화 끝나고 5분 뒤에 들어와요)';
+  if (b.screen_on_sec == null) {
+    // 브라우저는 걸음 수·화면 상태를 알 수 없다
+    return `통화 후 ${fmtSec(b.window_sec)} · 탭 가려짐 ${b.app_left_count ?? 0}번 · 화면에 띄워 둔 시간 ${fmtSec(b.foreground_sec)} (웹이라 걸음 수 없음)`;
+  }
+  const steps = b.steps == null ? '걸음 수 없음(권한 없음)' : `${b.steps}걸음`;
+  return `통화 후 ${fmtSec(b.window_sec)} · ${steps} · 화면 켜짐 ${fmtSec(b.screen_on_sec)} · 화면 꺼짐 ${b.screen_off_count}번 · 다른 앱 ${b.app_left_count}번`;
+}
+
+function transcript(call) {
+  const box = el('div', 'space-y-2 pt-3');
+  (call?.utterances || []).forEach(u => {
+    if (u.ai_before) {
+      box.appendChild(el('div', 'flex justify-start', null, [
+        el('div', 'max-w-[80%] rounded-2xl rounded-tl-sm px-3.5 py-2 text-sm bg-indigo-900/60 text-indigo-100', u.ai_before),
+      ]));
+    }
+    const silent = u.input === 'silent' || isUnheard(u);
+    const meta = [u.input === 'text' ? '키보드 입력' : null, u.latency_sec != null ? `${u.latency_sec}초 뒤 말 시작` : null]
+      .filter(Boolean).join(' · ');
+    box.appendChild(el('div', 'flex flex-col items-end', null, [
+      el('div', `max-w-[80%] rounded-2xl rounded-tr-sm px-3.5 py-2 text-sm ${silent ? 'bg-gray-800/60 text-gray-500 italic' : 'bg-gray-700 text-white'}`,
+        u.input === 'silent' ? '(대답 없음)' : isUnheard(u) ? '(소리는 들렸지만 알아듣지 못함)' : u.text),
+      meta ? el('div', 'text-[11px] text-gray-600 mt-0.5 mr-1', meta) : null,
+    ]));
+  });
+  if (!box.children.length) box.appendChild(el('div', 'text-sm text-gray-500', '대화 기록이 없어요.'));
+  return box;
+}
+
+function sessionCard(s) {
+  const c = s.call;
+  const badge = s.wake_success == null ? chip('판정 전') : s.wake_success ? chip('기상 성공', 'green') : chip('기상 실패', 'red');
+  const us = c?.utterances || [];
+  const unheard = us.filter(isUnheard).length;
+  const facts = c ? [
+    `통화 ${fmtSec(c.duration_sec)}`, `대답 ${c.turn_count}번`, `무응답 ${us.filter(u => u.input === 'silent').length}번`,
+    unheard ? `못 알아들음 ${unheard}번` : null,
+    `평균 대답 지연 ${c.latency_avg_sec == null ? '-' : c.latency_avg_sec + '초'}`,
+    c.snooze_count ? `다시 알림 ${c.snooze_count}번` : null,
+    c.ended_by === 'closed' ? '통화 중 앱·탭을 닫음' : null,
+  ].filter(Boolean).join(' · ') : '통화 기록 없음 (통화 후 행동만 들어옴)';
+  const turns = c?.utterances?.length || 0;
+  return el('details', 'bg-gray-900 border border-gray-800 rounded-2xl p-4', null, [
+    el('summary', '', null, [
+      el('div', 'flex items-center gap-2 flex-wrap', null, [
+        el('span', 'chevron text-gray-500 text-xs transition-transform', '▶'),
+        el('span', 'font-medium text-sm', fmtDate(s.created_at)), badge,
+        el('span', 'text-xs text-gray-500', [s.alarm_time && `알람 ${s.alarm_time}`, s.client, s.model].filter(Boolean).join(' · ')),
+      ]),
+      el('div', 'text-sm text-gray-300 mt-2', s.wake_reason || ''),
+      el('div', 'text-xs text-gray-500 mt-1', facts),
+      el('div', 'text-xs text-gray-500 mt-0.5', behaviorText(s.behavior)),
+      el('div', 'text-xs text-indigo-400 mt-2', turns ? `대화 내용 보기 (${turns}개)` : ''),
+    ]),
+    transcript(c),
+  ]);
+}
+
+function userSection(u) {
+  const judged = u.sessions.filter(s => s.wake_success != null);
+  const wins = judged.filter(s => s.wake_success).length;
+  const lat = u.sessions.map(s => s.call?.latency_avg_sec).filter(v => v != null);
+  return el('section', 'space-y-3', null, [
+    el('div', 'flex items-baseline gap-2', null, [
+      el('h2', 'text-lg font-semibold', `${u.user_name || '이름 없음'}님`),
+      el('span', 'text-[11px] text-gray-600 font-mono', u.user_id),
+    ]),
+    el('div', 'grid grid-cols-2 sm:grid-cols-4 gap-2', null, [
+      stat('통화', `${u.sessions.length}번`),
+      stat('기상 성공', `${wins} / ${judged.length}번`),
+      stat('성공률', judged.length ? `${Math.round(wins / judged.length * 100)}%` : '-'),
+      stat('평균 대답 지연', lat.length ? `${(lat.reduce((a, b) => a + b, 0) / lat.length).toFixed(1)}초` : '-'),
+    ]),
+    profileCard(u.profile),
+    ...u.sessions.map(sessionCard),
+  ]);
+}
+
+async function load() {
+  const content = document.getElementById('content');
+  try {
+    const res = await fetch('/api/v1/records');
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `오류 ${res.status}`);
+    const data = await res.json();
+    document.getElementById('db-path').textContent = data.db_path;
+    content.replaceChildren(...(data.users.length ? data.users.map(userSection)
+      : [el('p', 'text-gray-500 text-sm', '아직 기록이 없어요. 알람 통화를 한 번 끝까지 해 보세요.')]));
+  } catch (e) {
+    content.replaceChildren(el('p', 'text-red-400 text-sm', `기록을 불러오지 못했어요: ${e.message}`));
+  }
+}
+load();
+</script>
+</body>
+</html>

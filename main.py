@@ -6,7 +6,7 @@ import random
 import time
 import ollama
 import telemetry
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -60,7 +60,8 @@ LAST_STAGE = 3  # 0: 기상 확인, 1: 일정 공유, 2: 날씨/침대에서 나
 # 지시문은 매 턴 새로 붙어 프롬프트 캐시를 쓰지 못한다(설명 문장만으로 첫 토큰이 약 0.26초 늦어짐).
 # 그래서 단계별·상황별 설명은 시스템 프롬프트에 표로 두고(캐시됨), 지시문에는 이름표만 넣는다.
 STAGE_LABELS = {0: "1단계", 1: "2단계", 2: "3단계", 3: "마무리"}
-STATE_LABELS = {"awake": "깸", "up": "움직임", "sleepy": "버팀", "silent": "대답 없음", "other": "딴 얘기"}
+STATE_LABELS = {"awake": "깸", "waking": "일어나는 중", "up": "움직임", "sleepy": "버팀", "hangup": "끊자는 말",
+                "silent": "대답 없음", "other": "딴 얘기"}
 STAGE_GOALS = {
     0: "아직 덜 깼으니 눈을 뜨게 하기.",
     1: "눈은 떴지만 누워 있으니, 일정({schedule}) 중 가장 이른 것 하나를 들어 몸을 일으키게 하기.",
@@ -68,19 +69,25 @@ STAGE_GOALS = {
     3: "완전히 일어났으니 기뻐하며 일정 하나 응원하고 '그럼 이제 끊을게요'로 마무리. 질문 금지.",
 }
 
-# 사용자 대답 상태: awake(깼다/일어날게), up(몸이 침대 밖), sleepy(거부), silent(대답 없음), other(질문/딴 얘기).
+# 사용자 대답 상태: awake(깼다고 분명히 말함), waking(일어날게·응 같은 짧은 대답), up(몸이 침대 밖), sleepy(거부),
+# hangup(끊자고 함), silent(대답 없음), other(질문/딴 얘기).
 # 상태별로 "그 말에 어떻게 답할지"를 정한다. 정해진 재촉으로 넘어가지 않고 상대 말의 내용에 진짜로 답하게 하는 게 핵심
 STATE_GUIDES = {
     "awake": "깼다는 말을 반가워하기.",
+    "waking": "일어나려는 걸 반가워하되, 정말 일어났는지 행동 하나를 시켜 확인하기.",
     "up": "말한 행동을 구체적으로 짚어서 칭찬하기.",
     "sleepy": "졸린 이유나 핑계의 내용을 구체적으로 받아치기 (더 자라는 허락은 금지).",
+    # 다 깼다고 한 뒤(3단계)에 끊자고 하면 마무리로 넘어가므로, 이 지시는 아직 덜 깼을 때만 쓰인다
+    "hangup": "아직 다 일어난 걸 확인하지 못해 못 끊는다고 웃으며 버티고, 침대에서 나오면 끊겠다고 약속하기.",
     "silent": "대답이 없어 다시 잠든 것 같으니 이름을 부르며 아직 전화 안 끊었다고 하기.",
     "other": "질문엔 답, 감정엔 공감, 이야기엔 그 내용으로 대화.",
 }
 
-# 단계 이동: 깼다는 말은 침대 밖으로 나오기 전 단계(2)까지만, 몸을 움직였으면 두 단계씩 (마무리 조건은 next_stage 참고)
-STATE_STEP = {"awake": (1, 2), "up": (2, LAST_STAGE), "sleepy": (0, LAST_STAGE), "silent": (0, LAST_STAGE),
-              "other": (0, LAST_STAGE)}
+# 단계 이동: 깼다는 말은 한 단계씩, 몸을 움직였으면 두 단계씩 (마무리 조건은 next_stage 참고).
+# 예전에는 깼다는 말로는 3단계에서 멈춰 "일어났다니까?"를 몇 번 해도 통화가 끝나지 않았다.
+# "응", "일어날게" 같은 짧은 대답은 대충 해도 나오므로 예전처럼 3단계까지만
+STATE_STEP = {"awake": (1, LAST_STAGE), "waking": (1, 2), "up": (2, LAST_STAGE), "sleepy": (0, LAST_STAGE),
+              "hangup": (0, LAST_STAGE), "silent": (0, LAST_STAGE), "other": (0, LAST_STAGE)}
 
 # 화면에서 음성 인식이 아무 말도 듣지 못했을 때 보내는 약속된 메시지 (static/index.html의 SILENT_MESSAGE)
 SILENT_MESSAGE = "(대답 없음)"
@@ -125,7 +132,7 @@ def build_turn_directive(
     # 깨우는 중이라는 느낌은 유지하되 같은 표현이 반복되지 않도록, 매 턴 다른 아이디어를 하나 준다
     presence = ""
     if stage < LAST_STAGE:
-        mood = "sleepy" if stage == 0 or state in ("sleepy", "silent") else "awake"
+        mood = "sleepy" if stage == 0 or state in ("sleepy", "silent", "hangup") else "awake"
         ideas = PRESENCE_IDEAS[mood]
         # 턴마다 차례로 돌려 써서 같은 표현이 연달아 나오지 않게 한다 (시작 위치만 무작위)
         idea = ideas[(turn + PRESENCE_OFFSET) % len(ideas)]
@@ -245,7 +252,9 @@ def build_system_prompt(user_name: str, user_schedule: str, weather_info: str, p
 - 상대가 방금 한 말을 재치 있게 받아친 다음 일어나라고 합니다. 핑계를 대면 부드럽게 반박합니다.
 - 당신은 깨우는 사람입니다. 상대의 말이나 행동을 대신 연기하지 말고, 괄호로 된 지문도 쓰지 마세요.
 - 1~2문장, 60자 안팎으로 짧게 말합니다. 같은 말을 되풀이하지 마세요.
-- "안녕하세요"는 첫 인사에서만 씁니다. 영어, 한자, 이모지는 쓰지 마세요. 시각은 "8시 30분"처럼 숫자로 말합니다.
+- "안녕하세요"는 첫 인사에서만 씁니다. 영어, 한자, 이모지는 쓰지 마세요.
+- 지금 시각은 [지시]에 시각이 적혀 있을 때만 그 숫자 그대로 말하고, 그 밖에는 지금 몇 시인지 말하지 마세요.
+- 단계가 '마무리'가 아니면 "끊을게요", "좋은 하루 보내세요"처럼 통화를 끝내는 말은 하지 마세요.
 - 일정이나 날씨는 위에 적힌 사실만 말하고, 이번 목표에 없는 내용을 미리 몰아서 말하지 마세요.
 
 ## 대답하는 순서 (매번 지키기)
@@ -260,7 +269,7 @@ def build_system_prompt(user_name: str, user_schedule: str, weather_info: str, p
 
 
 # 명확한 대답은 규칙으로 바로 판단. 특정 문장이 아니라 일반적인 표현 패턴으로 잡는다.
-# 순서 중요: 거부/핑계 → 일어나는 중 → 몸을 움직임 → 질문 → 깸
+# 순서 중요: 거부/핑계 → 일어나는 중 → 몸을 움직임 → 깼다고 함 → 끊자고 함 → 질문 → 짧은 대답
 STATE_RULES = [
     ("sleepy", re.compile(
         # 일어나기 거부·부정
@@ -268,13 +277,13 @@ STATE_RULES = [
         # 더 자려 함
         r"졸려|졸리|피곤|자고\s?싶|더\s?(잘|자|누워|있을)|(만|좀)\s?더|\d+\s?분만|이따|잘게|잘래|잘\s?거야|잔다|"
         r"다시\s?(누|잘|자)|자는\s?중|자고\s?있|누워\s?있|이불\s?속|음냐|쿨쿨|zz|"
-        r"끊어|그만\s?깨|자게\s?해|꺼\s?줘|끄고\s?잘|봐\s?줘|"
+        r"그만\s?깨|자게\s?해|꺼\s?줘|끄고\s?잘|봐\s?줘|"
         # 몸 상태·상황을 핑계로 댐
         r"아파|무거|눈이\s?안|추워서|새벽|주말이(면|었으면)|늦게\s?잤|"
         r"휴강|결석|결근|안\s?가도|쉴래|쉬고\s?싶|오늘은\s?안|면\s?안\s?(되나|돼|될까)|안\s?되나|"
         r"재택|쉬면|빠져도|늦어도|지각해도|병가|연차")),
     # "일어나는 중", "눈 뜨고 있어"는 아직 침대 안이므로 아래 '움직이는 중' 패턴보다 먼저 본다
-    ("awake", re.compile(r"일어나는\s?중|일어나고\s?있|눈\s?뜨고|정신\s?(차|들)|기지개|침대에\s?앉")),
+    ("waking", re.compile(r"일어나는\s?중|일어나고\s?있|눈\s?뜨고|정신\s?(차|들)|기지개|침대에\s?앉")),
     # 꿈 이야기는 "나왔어" 같은 말이 섞여도 몸을 움직였다는 뜻이 아니다
     ("other", re.compile(r"꿈")),
     ("up", re.compile(
@@ -286,10 +295,13 @@ STATE_RULES = [
         r"(?:^|\s)(열었|신었|켰|껐|챙겼|입었|닦았|감았|마셨|먹었|나갔|갰|개었|정리했|차렸|스트레칭)|"
         # "보일러 켜고 왔어", "세수하러 왔어"처럼 다녀왔다는 표현
         r"[가-힣]\s?(고|서|러)\s?왔어|다녀왔|갔다\s?왔")),
+    # 깼다고 분명히 말함. "아니 일어났다니까?"처럼 물음표가 붙어도 질문이 아니므로 질문 규칙보다 먼저 본다
+    ("awake", re.compile(r"일어(났|남)|깨(어|었)|깼|눈\s?(떴|떠\s?있)|일으켰|앉았|내렸")),
+    # "끊어 줘", "끊을 거라면서" (거부·핑계와 함께 나오면 위에서 버팀으로 잡힌다)
+    ("hangup", re.compile(r"끊")),
     ("other", re.compile(r"\?|뭐|몇\s?시|언제|어디|왜|어때|무슨|누구")),
-    ("awake", re.compile(
-        r"일어(났|나|날|남|난)|깨(어|었|있)|깼|눈\s?(떴|떠\s?있)|일으켰|정신\s?(차|들)|"
-        r"앉았|내렸|알았어|알겠어|ㅇㅋ|오케|^\s*(응|어|네|넹|웅)+\s*$|준비(해야|할게)")),
+    ("waking", re.compile(
+        r"일어(나|날|난)|깨\s?있|정신\s?(차|들)|알았어|알겠어|ㅇㅋ|오케|^\s*(응|어|네|넹|웅)+\s*$|준비(해야|할게)")),
 ]
 
 
@@ -303,14 +315,18 @@ def classify_by_rules(user: str) -> Optional[str]:
 def classify_user_state(user: str) -> str:
     # 소형 모델 분류는 대부분 awake로 쏠려(gemma3:4b 단독 정확도 16/40) 통화가 너무 일찍 끝난다.
     # 규칙으로 판단하지 못한 대답은 other로 두어 단계는 유지하고, 답해 준 뒤 다시 깨우게 한다.
-    if user.strip() == SILENT_MESSAGE:
+    # 빈 메시지는 음성 인식이 소리만 듣고 글자를 못 알아들은 것 (예전 화면은 그대로 보냈다). 첫 인사로 착각하지 않게 대답 없음으로
+    if user.strip() in ("", SILENT_MESSAGE):
         return "silent"
     return classify_by_rules(user) or "other"
 
 
 def next_stage(stage: int, state: str) -> int:
     # 규칙 분류는 처음 보는 표현에서 약 60%만 맞고, 가끔 질문이나 투정을 "up"으로 오판한다.
-    # 오판 한 번으로 통화가 끝나지 않도록, 마무리는 2단계("다 일어나면 알려 달라")에서 up이 한 번 더 나와야 한다.
+    # 오판 한 번으로 통화가 끝나지 않도록, 마무리는 3단계("다 일어나면 알려 달라")에서만 한다.
+    # 거기서 몸을 움직였다(up)·깼다(awake)·이제 끊자(hangup)고 하면 마무리로 넘어간다
+    if state == "hangup":
+        return LAST_STAGE if stage >= 2 else stage
     if state == "up" and stage < 2:
         return 2
     step, cap = STATE_STEP[state]
@@ -340,6 +356,13 @@ PRESENCE_RE = re.compile(r"깨우|깨워|깨울|일어나|일어날|일어나요
 GIVEUP_RE = re.compile(r"더\s?주무|푹\s?주무|푹\s?자|잘\s?자요|더\s?자도|더\s?쉬|자도\s?(돼|괜찮)|쉬세요|그래도\s?괜찮|천천히\s?주무|누워\s?계세요|누워\s?있어도|더\s?누우|더\s?누워|더\s?계시|더\s?있어도|더\s?계셔도|더\s?잘\s?계|좀\s?더\s?주무|더\s?자요")
 # 소형 모델이 가끔 섞는 키릴·태국·아랍·그리스 문자 ("열 пятнадцать 분"). 지우면 말이 깨지므로 문제로 잡아 다시 생성한다
 FOREIGN_RE = re.compile(r"[\u0370-\u03FF\u0400-\u04FF\u0600-\u06FF\u0E00-\u0E7F]")
+# "지금 열한 시 정분입니다"처럼 묻지도 않은 지금 시각을 지어내는 말. 일정의 시각("10시 발표")은 잡지 않도록
+# '지금·현재·벌써' 바로 뒤의 시각과, 실제로는 없는 말인 '정분'만 본다
+HOUR_WORD = r"(\d{1,2}|한|두|세|네|다섯|여섯|일곱|여덟|아홉|열[가-힣]?|스물[가-힣]?|이십[가-힣]{0,2}|십[가-힣]?)"
+NOW_TIME_RE = re.compile(rf"(지금|현재|벌써)\s?(은|는|이)?\s?(오전|오후|아침)?\s?{HOUR_WORD}\s?시(?![간작])|정분")
+# 마무리 단계가 아닌데 통화를 끝내는 말 ("전화 안 끊을게요"는 깨우는 말이라 제외)
+EARLY_CLOSE_RE = re.compile(r"(?<!안 )(?<!안)(?<!못 )(?<!못)(끊을게|끊겠|끊어요|끊습니다)|"
+                            r"좋은\s?하루\s?(보내|시작|되)|하루\s?(잘|즐겁게|힘차게)\s?보내|다음에\s?또|내일\s?또\s?(전화|깨워)")
 # 문장 끝(문장부호 또는 끝)에서만 반말 어미를 본다
 BANMAL_RE = re.compile(r"(?:^|\s)(너를|너는|네가|너도|너의)\s|(?:^|\s)(떠|가|해|봐|와|자|일어나)(?:[!?.~]+|$)|[가-힣](야|니|지|자|어|아|나|가|해|봐|떠|워|와|져|쳐|라|래|냐|려|까|게|네|줘|데|거든|잖아|다구|구나)(?:[!?.~]+|$)|"
                        r"[가-힣](?<!니)(?<!까)다(?:[!?.~]+|$)|잖아,|[가-힣]야,")
@@ -398,6 +421,11 @@ def reply_issues(reply: str, user_msg: str, stage: int, first: bool, previous: l
         issues.append("깨우는 중이라는 표현 없음")
     if stage == LAST_STAGE and reply.rstrip().endswith("?"):
         issues.append("마무리인데 질문")
+    # 첫 인사와 "지금 몇 시야"에는 [지시]에 실제 시각을 주므로 말해도 된다
+    if not first and not asks_current_time(user_msg) and NOW_TIME_RE.search(reply):
+        issues.append("묻지 않은 시각")
+    if stage < LAST_STAGE and EARLY_CLOSE_RE.search(reply):
+        issues.append("이른 마무리")
     return issues
 
 
@@ -471,7 +499,8 @@ def call_ollama(model: str, system: str, messages: list) -> str:
 # 말하는 속도(약 6음절/초)보다 훨씬 빠르므로, 첫 문장만 기다렸다가 읽기 시작해도 중간에 끊기지 않는다.
 MAX_SENTENCES = 3
 # 문장 단위에서도 걸러야 하는 문제. 길이·깨우는 표현 같은 답변 전체 기준 검사는 제외
-SENTENCE_ISSUES = {"반말", "외국어 또는 깨진 조사", "포기 발언", "이전 답변 반복", "사용자 말 따라 하기", "반복 인사"}
+SENTENCE_ISSUES = {"반말", "외국어 또는 깨진 조사", "포기 발언", "이전 답변 반복", "사용자 말 따라 하기", "반복 인사",
+                   "묻지 않은 시각", "이른 마무리"}
 SENTENCE_END_RE = re.compile(r"[.!?~…]+[\"')\]]*\s")
 # 사람처럼 "아하," "에이," 정도에서 바로 말을 시작하도록 쉼표에서도 끊는다 (너무 짧은 조각은 붙여서)
 PHRASE_END_RE = re.compile(r"(?:[.!?~…]+[\"')\]]*|,)\s")
@@ -494,8 +523,8 @@ FALLBACK_LINES = {
     ],
     "end": "깨운 보람이 있네요! " + CLOSING_LINE,
 }
-# 말을 멈춰야 하는 심각한 문제. '이전 답변 반복'은 그 문장만 건너뛰고 계속 말한다
-STOP_ISSUES = SENTENCE_ISSUES - {"이전 답변 반복"}
+# 말을 멈춰야 하는 심각한 문제. 반복·지어낸 시각·이른 마무리는 그 문장만 건너뛰고 계속 말한다
+STOP_ISSUES = SENTENCE_ISSUES - {"이전 답변 반복", "묻지 않은 시각", "이른 마무리"}
 
 
 def stream_tokens(model: str, messages: list, stats: dict = None):
@@ -607,7 +636,7 @@ def stream_reply(
                                          "있습니다. 다른 표현으로 새로 말하세요.)"
                     break  # 포기 발언·반말·외국어 등은 거기서 말을 멈춘다
                 if issues and not sentence_so_far:
-                    # 앞에서 한 말을 되풀이하는 문장은 건너뛰고 다음 문장으로 넘어간다
+                    # 앞에서 한 말을 되풀이하거나 시각을 지어내거나 미리 끊겠다는 문장은 건너뛰고 다음 문장으로 넘어간다
                     skipping = not ends_sentence
                     continue
                 # (이미 말하기 시작한 문장이 반복이면 끊긴 문장을 남기지 않도록 끝까지 말한다)
@@ -636,7 +665,8 @@ def asks_current_time(message: str) -> bool:
     # "지금 몇 시야"처럼 현재 시각을 물을 때만. "회의 몇 시였지?"에 현재 시각을 주면 모델이 둘을 섞어 틀리게 답한다
     if re.search(r"회의|약속|예약|수업|일정|출근|미팅", message):
         return False
-    return bool(re.search(r"몇\s?시|시간|시계", message))
+    # "진짜 아홉시 30분이야?", "벌써 4시야?"처럼 AI가 말한 시각을 되묻는 것도 시각 질문이다
+    return bool(re.search(r"몇\s?시|시간|시계|시(\s?\d+\s?분)?\s?(이야|야|이에요|예요|맞아|인가|라고)?\s?\?", message))
 
 
 def prepare_turn(request: ChatRequest):
@@ -783,3 +813,10 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 @app.get("/")
 async def root():
     return FileResponse("static/index.html")
+
+
+# 쌓인 통화 기록과 프로파일을 보는 화면. 앱(APK)에 들어가지 않도록 static 밖에 둔다
+@app.get("/records")
+def records_page(request: Request):
+    telemetry.require_local(request)
+    return FileResponse("records.html")

@@ -19,7 +19,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Annotated, Callable, List, Literal, Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 log = logging.getLogger("uvicorn.error")
@@ -230,6 +230,37 @@ def get_profile(user_id: str):
     if profile is None:
         raise HTTPException(status_code=404, detail="아직 프로파일이 없습니다")
     return profile
+
+
+LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
+
+
+def require_local(request: Request):
+    # 서버는 폰이 접속하도록 0.0.0.0으로 열려 있다. 대화 원문은 같은 와이파이의 다른 사람이 보지 못하게 이 PC에서만
+    if not request.client or request.client.host not in LOCAL_HOSTS:
+        raise HTTPException(status_code=403, detail="기록은 서버를 켠 PC에서만 볼 수 있습니다")
+
+
+@router.get("/records")
+def get_records(request: Request):
+    """기록 보기 화면(records.html)용. 사용자별 프로파일과 통화 기록 전체"""
+    require_local(request)
+    with db() as conn:
+        profiles = {r["user_id"]: json.loads(r["profile"]) for r in conn.execute("SELECT user_id, profile FROM user_profiles")}
+        rows = conn.execute("SELECT * FROM wake_sessions ORDER BY created_at DESC").fetchall()
+    users = {}
+    for r in rows:
+        user = users.setdefault(r["user_id"], {"user_id": r["user_id"], "user_name": r["user_name"],
+                                               "profile": profiles.get(r["user_id"]), "sessions": []})
+        user["sessions"].append({
+            "session_id": r["session_id"], "created_at": r["created_at"], "alarm_time": r["alarm_time"],
+            "client": r["client"], "model": r["model"],
+            "wake_success": None if r["wake_success"] is None else bool(r["wake_success"]),
+            "wake_reason": r["wake_reason"],
+            "call": json.loads(r["call"]) if r["call"] else None,
+            "behavior": json.loads(r["behavior"]) if r["behavior"] else None,
+        })
+    return {"db_path": DB_PATH, "users": list(users.values())}
 
 
 # ─── 백그라운드: 판정 → 프로파일 ─────────────────────────────────────────────────

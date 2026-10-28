@@ -892,6 +892,8 @@ async function acceptCall() {
   S.conversationLevel = 0;
   S.alarmCanEnd = false;
   S.silentCount = 0;
+  S.turn?.controller.abort();
+  S.turn = null;
   CallTelemetry.start();
 
   // Disable end call button
@@ -974,6 +976,8 @@ function startListening() {
   Voice.listen(
     (transcript) => {
       stopListening();
+      // 소리는 들었지만 글자를 못 알아들으면 빈 문자열이 온다. 그대로 보내면 서버가 첫 인사로 착각하므로 대답 없음으로 본다
+      if (!transcript.trim()) { onSilence(); return; }
       S.silentCount = 0;
       handleUserSpeech(transcript);
     },
@@ -1048,20 +1052,33 @@ function sendTextMessage() {
 }
 
 async function handleUserSpeech(text, { silent = false, input = 'voice' } = {}) {
+  // AI가 대답하는 중에 다음 말을 보내면(키보드 입력) 앞 대답을 멈춘다. 두 대답이 동시에 진행되면
+  // 말하기 대기열과 대화 기록이 뒤섞인다. 이미 한 말까지는 기록에 남겨 대화 순서를 지킨다
+  const prev = S.turn;
+  if (prev && !prev.finished) {
+    prev.finished = true;
+    prev.controller.abort();
+    if (prev.phrases.length) S.conversationHistory.push({ role: 'assistant', content: prev.phrases.join(' ') });
+  }
+  const turn = S.turn = { controller: new AbortController(), phrases: [], finished: false };
+  const isCurrent = () => S.turn === turn;
+
   CallTelemetry.record(text, silent ? 'silent' : input);
   if (silent) addNotice('… 대답이 없어요');
   else addMessage('user', text);
   S.conversationHistory.push({ role: 'user', content: text });
+  const userIndex = S.conversationHistory.length - 1;
   showStatus('thinking');
 
   // 서버가 답변을 구절 단위로 보내면, 첫 구절이 오자마자 말풍선을 띄우고 읽기 시작한다
   let bubble = null;
-  const phrases = [];
+  const phrases = turn.phrases;
   beginSpeaking();
   const onEvent = (ev) => {
+    if (!isCurrent()) return;
     if (ev.type === 'meta') {
       // 서버가 실제로 모델에 보낸 내용으로 바꿔 저장해야 다음 턴에 서버의 프롬프트 캐시가 재사용된다
-      if (ev.user_content) S.conversationHistory[S.conversationHistory.length - 1].content = ev.user_content;
+      if (ev.user_content) S.conversationHistory[userIndex].content = ev.user_content;
       S.conversationLevel = ev.conversation_level;
       S.alarmCanEnd = ev.alarm_can_end;
       updateLevelIndicators(S.conversationLevel);
@@ -1084,9 +1101,10 @@ async function handleUserSpeech(text, { silent = false, input = 'voice' } = {}) 
 
   try {
     // Build history without the last user message (it's sent separately as `message`)
-    const history = S.conversationHistory.slice(0, -1);
+    const history = S.conversationHistory.slice(0, userIndex);
     const res = await fetch(apiUrl('/api/chat/stream'), {
       method: 'POST',
+      signal: turn.controller.signal,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         message: text,
@@ -1119,10 +1137,14 @@ async function handleUserSpeech(text, { silent = false, input = 'voice' } = {}) 
         if (line) onEvent(JSON.parse(line));
       }
     }
+    if (!isCurrent()) return;
+    turn.finished = true;
     if (!phrases.length) throw new Error('AI 답변이 비어 있어요.');
     S.conversationHistory.push({ role: 'assistant', content: phrases.join(' ') });
     SpeechQueue.close();  // 다 읽으면 듣기 시작
   } catch (e) {
+    if (!isCurrent()) return;  // 다음 말이 와서 멈춘 대답 (abort)
+    turn.finished = true;
     SpeechQueue.cancel();
     S.isSpeaking = false;
     hideStatus();
