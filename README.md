@@ -32,6 +32,7 @@ AI는 [Ollama](https://ollama.com)로 내 컴퓨터에서 직접 돌리기 때�
 | `android/` | 안드로이드 앱 (알람, 벨소리, 음성 합성·인식) |
 | `requirements.txt` | Python 패키지 목록 |
 | `run.bat` | Windows용 실행 스크립트 (패키지 설치 + 서버 실행) |
+| `start-public.bat` | 서버를 켜고 ngrok 고정 주소로 인터넷에 공개하는 스크립트. 사용법은 `서버-실행법.md` |
 | `build-apk.bat` | 안드로이드 APK 빌드 스크립트 |
 
 ### API

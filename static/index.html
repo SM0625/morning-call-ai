@@ -335,6 +335,9 @@ function apiUrl(path) {
   return (NATIVE ? NATIVE.getServerUrl().replace(/\/+$/, '') : '') + path;
 }
 
+// 서버를 ngrok 무료 주소로 공개하면 브라우저(WebView) 요청에 경고 페이지를 대신 돌려준다. 이 헤더가 있으면 건너뛴다
+const API_HEADERS = { 'ngrok-skip-browser-warning': '1' };
+
 const END_OF_SPEECH_MS = 800;  // 중간 인식 결과가 이만큼 그대로면 말이 끝난 것으로 본다
 
 // 말하기(TTS)·듣기(STT): 앱에서는 안드로이드 음성 기능, 브라우저에서는 Web Speech API
@@ -492,7 +495,7 @@ function telemetryEnvelope(event, sessionId) {
 async function postTelemetry(payload) {
   const res = await fetch(apiUrl(TELEMETRY_PATH), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { ...API_HEADERS, 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
     // 브라우저에서 탭을 닫는 중에도 끝까지 보낸다. 앱(file://)에서는 다른 출처 요청이라 keepalive를 쓰지 않는다
     keepalive: !NATIVE,
@@ -817,14 +820,14 @@ function userParams() {
 
 // 사용자 정보가 담긴 시스템 프롬프트까지 미리 처리해 두면 첫 대답이 빨라진다
 function warmupModel() {
-  fetch(apiUrl(`/api/warmup?${userParams()}`), { method: 'POST' }).catch(() => {});
+  fetch(apiUrl(`/api/warmup?${userParams()}`), { method: 'POST', headers: API_HEADERS }).catch(() => {});
 }
 
 // 첫 인사는 벨이 울리는 동안 미리 받아 둔다. 전화를 받자마자 바로 말할 수 있다.
 async function prefetchInitialMessage() {
   // 날씨가 늦게 오면 첫 인사를 기다리게 하지 않는다 (최대 1.5초)
   await Promise.race([S.weatherPromise, new Promise(r => setTimeout(r, 1500))]);
-  const res = await fetch(apiUrl(`/api/initial-message?${userParams()}`));
+  const res = await fetch(apiUrl(`/api/initial-message?${userParams()}`), { headers: API_HEADERS });
   if (!res.ok) throw new Error((await res.json()).detail);
   return res.json();  // { message, user_content }
 }
@@ -1105,7 +1108,7 @@ async function handleUserSpeech(text, { silent = false, input = 'voice' } = {}) 
     const res = await fetch(apiUrl('/api/chat/stream'), {
       method: 'POST',
       signal: turn.controller.signal,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...API_HEADERS, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         message: text,
         history,
