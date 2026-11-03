@@ -112,6 +112,7 @@ pip install -r requirements.txt
   ```
 
 - **GPU 레이어 수**: 기본으로 모델의 모든 레이어를 GPU에 올립니다(`OLLAMA_NUM_GPU=99`). VRAM이 부족하면 자동으로 기본 설정으로 다시 시도합니다.
+- **모델 유지**: 서버를 켜면 모델을 바로 올리고, 서버가 켜져 있는 동안 내리지 않습니다. 모델을 다시 올리는 데 약 6초가 걸려서 첫 통화가 늦어지기 때문입니다. 쓰지 않을 때 VRAM을 비우려면 `OLLAMA_KEEP_ALIVE=60m`처럼 지정합니다.
 - `.env.example`에 있는 `ANTHROPIC_API_KEY`는 현재 코드에서 쓰지 않습니다.
 
 ## 안드로이드 앱
@@ -143,6 +144,15 @@ build-apk.bat http://192.168.0.10:8000 # 다른 주소를 넣을 때
 
 - 경로에 한글이 있으면 안드로이드 빌드 도구가 실패할 수 있어서, 스크립트가 임시 영문 드라이브(`M:`)로 연결한 뒤 빌드합니다.
 - JDK는 `C:\Program Files\Microsoft\jdk-17*`, SDK는 `%LOCALAPPDATA%\Android\Sdk`, Gradle은 `%LOCALAPPDATA%\Android\gradle`에서 찾습니다.
+
+### 화면 스타일을 고쳤을 때
+
+앱을 빨리 열려고 Tailwind를 인터넷에서 받지 않고, 미리 만든 `static/tailwind.css`를 앱에 넣어 씁니다.
+`static/index.html`에 새 Tailwind 클래스를 쓰면 Node.js로 이 파일을 다시 만든 뒤 APK를 빌드합니다.
+
+```powershell
+npx tailwindcss@3.4.17 -i tailwind.input.css --content static/index.html -o static/tailwind.css --minify
+```
 
 ## 대화가 진행되는 방식
 

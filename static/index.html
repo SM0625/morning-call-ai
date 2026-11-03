@@ -4,10 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AI 모닝콜</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- 앱을 열 때마다 인터넷에서 받지 않도록 Tailwind는 미리 만든 CSS를, 글꼴은 기기에 있는 것을 쓴다.
+       클래스를 새로 쓰면 tailwind.css를 다시 만들어야 한다 (README의 "화면 스타일을 고쳤을 때") -->
+  <link rel="stylesheet" href="tailwind.css">
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
-    * { font-family: 'Noto Sans KR', sans-serif; }
+    * { font-family: system-ui, -apple-system, 'Noto Sans KR', 'Malgun Gothic', sans-serif; }
 
     @keyframes pulse-ring {
       0% { transform: scale(1); opacity: 0.8; }

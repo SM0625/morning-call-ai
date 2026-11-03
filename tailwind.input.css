@@ -1,0 +1,4 @@
+/* static/tailwind.css를 만드는 입력 파일. 만드는 법은 README의 "화면 스타일을 고쳤을 때" */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;

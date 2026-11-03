@@ -3,6 +3,7 @@ import re
 import json
 import logging
 import random
+import threading
 import time
 import ollama
 import telemetry
@@ -25,7 +26,9 @@ app.add_middleware(
 )
 
 DEFAULT_MODEL = os.getenv("OLLAMA_MODEL", "gemma3:4b")
-KEEP_ALIVE = "60m"  # 알람 직후 첫 응답이 늦지 않도록 모델을 메모리에 유지
+# 모델이 메모리에서 내려가면 다시 올리는 데 약 6초 걸린다. 앱 알람은 앱이 닫혀 있어도 울려서 화면의 예열(알람 2분 전)이
+# 돌지 않을 수 있으므로, 서버가 켜져 있는 동안 계속 올려 둔다(-1). VRAM을 비워야 하면 OLLAMA_KEEP_ALIVE=60m 처럼 지정
+KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", -1)
 # 보낼 대화 기록 수. 기록 앞부분이 잘려 나가면 Ollama 프롬프트 캐시가 깨져 매 턴 1초 이상 늦어지므로,
 # 한 통화가 끝날 때까지 잘리지 않을 만큼 넉넉히 둔다
 MAX_HISTORY = 30
@@ -793,6 +796,12 @@ def warmup(model: str = None, user_name: str = "", user_schedule: str = "", weat
         return {"ok": False, "error": str(e)}
 
 
+@app.on_event("startup")
+def preload_model():
+    # 서버를 켜자마자 모델을 올려 두어 첫 통화도 바로 대답하게 한다. 서버 시작은 기다리게 하지 않는다
+    threading.Thread(target=warmup, daemon=True).start()
+
+
 @app.get("/api/models")
 async def list_models():
     try:
@@ -813,6 +822,12 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 @app.get("/")
 async def root():
     return FileResponse("static/index.html")
+
+
+# index.html이 앱(file://)에서도 열리도록 상대 경로로 부르는 스타일 파일
+@app.get("/tailwind.css")
+async def tailwind_css():
+    return FileResponse("static/tailwind.css")
 
 
 # 쌓인 통화 기록과 프로파일을 보는 화면. 앱(APK)에 들어가지 않도록 static 밖에 둔다
