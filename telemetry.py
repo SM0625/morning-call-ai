@@ -69,7 +69,7 @@ class Utterance(BaseModel):
     input: Literal["voice", "text", "silent"] = "voice"
     latency_sec: Optional[float] = Field(None, ge=0, le=600)  # AI 말이 끝나고 말하기 시작할 때까지 (음성일 때만)
     ai_before: str = Field("", max_length=500)                # 이 대답 직전에 AI가 한 말
-    stage_before: int = Field(0, ge=0, le=3)
+    stage_before: int = Field(0, ge=0, le=4)
     at_sec: Optional[float] = None
 
 
@@ -77,9 +77,9 @@ class CallData(BaseModel):
     started_at: Optional[str] = None
     ended_at: Optional[str] = None
     duration_sec: Optional[float] = None
-    ended_by: Literal["button", "closed"] = "button"
+    ended_by: Literal["button", "closed", "steps"] = "button"  # steps: 목표 걸음 수를 채워 자동 종료
     reached_end: bool = False  # AI가 다 일어났다고 판단했는지
-    final_stage: int = Field(0, ge=0, le=3)
+    final_stage: int = Field(0, ge=0, le=4)
     snooze_count: int = Field(0, ge=0, le=100)
     turn_count: int = 0
     silent_count: int = 0
@@ -284,6 +284,8 @@ SCREEN_AWAKE_SEC = 90   # 화면을 이만큼 켜 두었으면 폰을 쓰며 깨
 
 def judge_wake(call: Optional[dict], behavior: Optional[dict]) -> tuple:
     """(성공 여부, 이유). 통화 결과를 기본으로 하고, 통화 후 행동이 있으면 그걸로 뒤집을 수 있다"""
+    if call and call.get("ended_by") == "steps":
+        return True, "통화 중 목표 걸음 수를 채움"
     if call and not call.get("reached_end"):
         return False, "AI가 일어났다고 판단하기 전에 통화를 끊음"
     if not behavior:

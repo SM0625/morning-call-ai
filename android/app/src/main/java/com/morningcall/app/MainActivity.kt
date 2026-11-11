@@ -4,7 +4,9 @@ import android.Manifest
 import android.app.Activity
 import android.app.NotificationManager
 import android.content.Intent
+import android.annotation.SuppressLint
 import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.media.AudioAttributes
 import android.net.Uri
 import android.os.Build
@@ -54,6 +56,8 @@ class MainActivity : Activity() {
     private val finishListening = Runnable { recognizer?.stopListening() }
     private var pageLoaded = false
     private var pendingAlarm = false
+    // 통화 중 걸음 수. 걸을 때마다 화면에 알려 목표 걸음 수와 비교하게 한다
+    private val callSteps by lazy { CallSteps(this) { n -> js("window.onNativeSteps && window.onNativeSteps($n)") } }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -88,6 +92,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         WakeMonitor.onReport = null  // 측정은 앱 Context에서 계속되고, 결과는 저장해 두었다가 다음에 가져간다
+        callSteps.stop()
         tts?.shutdown()
         recognizer?.destroy()
         if (isFinishing) Ringer.stop(this)
@@ -349,5 +354,33 @@ class MainActivity : Activity() {
         /** 측정이 끝난 결과들(JSON 배열 문자열)을 꺼낸다. 꺼낸 결과는 지워진다 */
         @JavascriptInterface
         fun takeWakeReports(): String = WakeMonitor.takeReports(this@MainActivity)
+
+        /**
+         * 폰이 마지막으로 알고 있는 위치 {"lat":…,"lon":…}. 웹 화면의 위치 요청이 실패했을 때 날씨에 쓴다.
+         * 다른 앱들이 위치를 쓸 때마다 갱신되어 보통 몇 분 안의 위치다. 권한이 없거나 모르면 ""
+         */
+        @SuppressLint("MissingPermission")  // 바로 아래에서 권한을 확인한다
+        @JavascriptInterface
+        fun getLastLocation(): String {
+            if (!hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION)) return ""
+            val manager = getSystemService(LocationManager::class.java)
+            val latest = manager.getProviders(true)
+                .mapNotNull { provider -> runCatching { manager.getLastKnownLocation(provider) }.getOrNull() }
+                .maxByOrNull { it.time } ?: return ""
+            return JSONObject().put("lat", latest.latitude).put("lon", latest.longitude).toString()
+        }
+
+        /** 통화 중 걸음 수 세기. 걸을 때마다 window.onNativeSteps(걸음 수), 못 세면 window.onNativeStepError(이유) */
+        @JavascriptInterface
+        fun startStepCount() = runOnUiThread {
+            val reason = callSteps.start() ?: return@runOnUiThread
+            js("window.onNativeStepError && window.onNativeStepError('$reason')")
+            if (reason == "permission" && Build.VERSION.SDK_INT >= 29) {
+                requestPermissions(arrayOf(Manifest.permission.ACTIVITY_RECOGNITION), REQ_PERMISSIONS)
+            }
+        }
+
+        @JavascriptInterface
+        fun stopStepCount() = runOnUiThread { callSteps.stop() }
     }
 }

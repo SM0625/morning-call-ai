@@ -7,11 +7,13 @@ import threading
 import time
 import ollama
 import telemetry
+import gcalendar
+import weather_quiz
 from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
 
@@ -49,6 +51,9 @@ class ChatRequest(BaseModel):
     conversation_level: int = 0
     model: Optional[str] = None
     user_id: Optional[str] = ""  # 프로파일을 찾는 익명 ID (static/index.html의 userId())
+    step_goal: int = Field(0, ge=0, le=1000)  # 통화 중 이만큼 걸으면 통화가 끝난다 (앱에서만, 0이면 없음)
+    weather: Optional[weather_quiz.Weather] = None  # 날씨 퀴즈용 숫자 날씨. 없으면 퀴즈를 건너뛴다
+    quiz_attempts: int = Field(0, ge=0, le=20)  # 퀴즈에서 지금까지 틀린 횟수 (화면이 기억했다가 보낸다)
 
 
 class ChatResponse(BaseModel):
@@ -57,19 +62,22 @@ class ChatResponse(BaseModel):
     conversation_level: int
 
 
-LAST_STAGE = 3  # 0: 기상 확인, 1: 일정 공유, 2: 날씨/침대에서 나오기, 3: 마무리
+# 0: 기상 확인, 1: 일정 공유, 2: 날씨/침대에서 나오기, 3: 날씨 퀴즈, 4: 마무리.
+# 다 일어났다고 판단되면 바로 끝내지 않고 날씨 퀴즈를 맞혀야 마무리한다(weather_quiz.py). 날씨 정보가 없으면 퀴즈를 건너뛴다
+QUIZ_STAGE = 3
+LAST_STAGE = 4
 
 # 각 단계에서 이번 답변이 할 일.
 # 지시문은 매 턴 새로 붙어 프롬프트 캐시를 쓰지 못한다(설명 문장만으로 첫 토큰이 약 0.26초 늦어짐).
 # 그래서 단계별·상황별 설명은 시스템 프롬프트에 표로 두고(캐시됨), 지시문에는 이름표만 넣는다.
-STAGE_LABELS = {0: "1단계", 1: "2단계", 2: "3단계", 3: "마무리"}
+STAGE_LABELS = {0: "1단계", 1: "2단계", 2: "3단계", 3: "날씨 퀴즈", 4: "마무리"}
 STATE_LABELS = {"awake": "깸", "waking": "일어나는 중", "up": "움직임", "sleepy": "버팀", "hangup": "끊자는 말",
                 "silent": "대답 없음", "other": "딴 얘기"}
 STAGE_GOALS = {
     0: "아직 덜 깼으니 눈을 뜨게 하기.",
     1: "눈은 떴지만 누워 있으니, 일정({schedule}) 중 가장 이른 것 하나를 들어 몸을 일으키게 하기.",
     2: "날씨({weather})를 짧게 말하고 침대에서 나와 움직이게 하기. 다 일어나면 알려 달라고.",
-    3: "완전히 일어났으니 기뻐하며 일정 하나 응원하고 '그럼 이제 끊을게요'로 마무리. 질문 금지.",
+    4: "완전히 일어났으니 기뻐하며 일정 하나 응원하고 '그럼 이제 끊을게요'로 마무리. 질문 금지.",
 }
 
 # 사용자 대답 상태: awake(깼다고 분명히 말함), waking(일어날게·응 같은 짧은 대답), up(몸이 침대 밖), sleepy(거부),
@@ -89,8 +97,8 @@ STATE_GUIDES = {
 # 단계 이동: 깼다는 말은 한 단계씩, 몸을 움직였으면 두 단계씩 (마무리 조건은 next_stage 참고).
 # 예전에는 깼다는 말로는 3단계에서 멈춰 "일어났다니까?"를 몇 번 해도 통화가 끝나지 않았다.
 # "응", "일어날게" 같은 짧은 대답은 대충 해도 나오므로 예전처럼 3단계까지만
-STATE_STEP = {"awake": (1, LAST_STAGE), "waking": (1, 2), "up": (2, LAST_STAGE), "sleepy": (0, LAST_STAGE),
-              "hangup": (0, LAST_STAGE), "silent": (0, LAST_STAGE), "other": (0, LAST_STAGE)}
+STATE_STEP = {"awake": (1, QUIZ_STAGE), "waking": (1, 2), "up": (2, QUIZ_STAGE), "sleepy": (0, QUIZ_STAGE),
+              "hangup": (0, QUIZ_STAGE), "silent": (0, QUIZ_STAGE), "other": (0, QUIZ_STAGE)}
 
 # 화면에서 음성 인식이 아무 말도 듣지 못했을 때 보내는 약속된 메시지 (static/index.html의 SILENT_MESSAGE)
 SILENT_MESSAGE = "(대답 없음)"
@@ -125,7 +133,7 @@ CLOSING_LINE = "그럼 이제 전화 끊을게요, 좋은 하루 보내세요!"
 
 def build_turn_directive(
     user_schedule: str, weather_info: str, stage: int, state: str = "", last_ai: str = "", turn: int = 0,
-    ask_time: bool = False, user_message: str = "",
+    ask_time: bool = False, user_message: str = "", step_goal: int = 0,
 ) -> str:
     # 소형 모델이 잘 따르도록 이번 턴 지시는 사용자 메시지 바로 뒤에 붙인다
     goal = STAGE_GOALS[stage].format(
@@ -139,6 +147,9 @@ def build_turn_directive(
         ideas = PRESENCE_IDEAS[mood]
         # 턴마다 차례로 돌려 써서 같은 표현이 연달아 나오지 않게 한다 (시작 위치만 무작위)
         idea = ideas[(turn + PRESENCE_OFFSET) % len(ideas)]
+        # 걸음 목표는 시스템 프롬프트에만 두면 소형 모델이 쓰지 않는다(4번 중 0번). 버티는 턴에 번갈아 아이디어로 준다
+        if step_goal and mood == "sleepy" and user_message and turn % 2 == 1:
+            idea = f"{step_goal}걸음만 걸으면 바로 끊어 주겠다"
         presence = f" / 느낌: {idea}"
     # 현재 시각을 매번 주면 모델이 매 턴 시간 얘기만 하므로, 시간을 물었을 때만 알려 준다
     now = ""
@@ -228,7 +239,8 @@ def profile_context(user_id: str, user_name: str, refresh: bool = False) -> str:
     return _call_profiles[key]
 
 
-def build_system_prompt(user_name: str, user_schedule: str, weather_info: str, profile: str = "") -> str:
+def build_system_prompt(user_name: str, user_schedule: str, weather_info: str, profile: str = "",
+                        step_goal: int = 0) -> str:
     # 통화 중 바뀌지 않는 내용만 넣어 Ollama가 이 프롬프트의 처리 결과를 재사용하게 한다
     day_names = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
     day_name = day_names[datetime.now().weekday()]
@@ -239,6 +251,9 @@ def build_system_prompt(user_name: str, user_schedule: str, weather_info: str, p
     stage_table = "\n".join(
         f"- {STAGE_LABELS[n]}: {g.format(schedule=schedule, weather=weather)}" for n, g in STAGE_GOALS.items()
     )
+    # 걸음 목표가 없으면 이 줄이 빠져 예전과 같은 프롬프트가 된다
+    steps = (f"\n걸음 목표: 폰을 들고 {step_goal}걸음 걸으면 통화가 바로 끝납니다. "
+             f"버티면 \"{step_goal}걸음만 걸으면 끊어 드릴게요\"처럼 가끔 활용하세요.") if step_goal else ""
 
     return f"""{profile}당신은 {user_name}님을 매일 아침 전화로 깨워 주는 다정하고 끈기 있는 모닝콜 친구입니다.
 지금 알람 시간이 되어 {user_name}님에게 전화를 걸었고, 통화가 연결된 상태입니다.
@@ -246,7 +261,7 @@ def build_system_prompt(user_name: str, user_schedule: str, weather_info: str, p
 
 오늘: {day_name}
 오늘 일정: {schedule}
-날씨: {weather}
+날씨: {weather}{steps}
 
 ## 말하는 방식
 - 실제 사람이 전화로 깨우듯 자연스러운 한국어 구어체로, 다정하지만 끈질기게 말합니다.
@@ -329,7 +344,7 @@ def next_stage(stage: int, state: str) -> int:
     # 오판 한 번으로 통화가 끝나지 않도록, 마무리는 3단계("다 일어나면 알려 달라")에서만 한다.
     # 거기서 몸을 움직였다(up)·깼다(awake)·이제 끊자(hangup)고 하면 마무리로 넘어간다
     if state == "hangup":
-        return LAST_STAGE if stage >= 2 else stage
+        return QUIZ_STAGE if stage >= 2 else stage
     if state == "up" and stage < 2:
         return 2
     step, cap = STATE_STEP[state]
@@ -680,11 +695,13 @@ def prepare_turn(request: ChatRequest):
     state = classify_user_state(request.message)
     log.debug("분류 %s | %s", state, request.message)
     stage = next_stage(max(0, min(request.conversation_level, LAST_STAGE)), state)
+    if stage == QUIZ_STAGE:  # 날씨 정보가 없어 퀴즈를 낼 수 없다 (있으면 quiz_turn이 먼저 처리한다)
+        stage = LAST_STAGE
     telemetry.note_call_activity()
 
     system_prompt = build_system_prompt(
         request.user_name, request.user_schedule, request.weather_info,
-        profile_context(request.user_id, request.user_name),
+        profile_context(request.user_id, request.user_name), request.step_goal,
     )
     directive = build_turn_directive(
         request.user_schedule, request.weather_info, stage, state, last_ai,
@@ -692,6 +709,7 @@ def prepare_turn(request: ChatRequest):
         ask_time=asks_current_time(request.message),
         # 대답 없음은 인용할 말이 없다
         user_message="" if state == "silent" else request.message,
+        step_goal=request.step_goal,
     )
 
     recent = request.history[-MAX_HISTORY:]
@@ -700,9 +718,33 @@ def prepare_turn(request: ChatRequest):
     return stage, system_prompt, messages
 
 
+def quiz_turn(request: ChatRequest):
+    """날씨 퀴즈를 시작하거나 대답을 채점하는 턴이면 (단계, 대답, 틀린 횟수), 아니면 None.
+    퀴즈는 숫자가 정확해야 해서 AI 대신 코드가 말한다(AI를 부르지 않아 바로 대답한다)"""
+    if request.weather is None:
+        return None
+    quiz = weather_quiz.make_quiz(request.weather)
+    current = max(0, min(request.conversation_level, LAST_STAGE))
+    state = classify_user_state(request.message)
+    if current == QUIZ_STAGE:
+        telemetry.note_call_activity()
+        turn = weather_quiz.answer_turn(quiz, request.message, request.quiz_attempts, request.user_name or "",
+                                        silent=state == "silent")
+        log.debug("퀴즈 %s | %s → %s", quiz.question, request.message, turn.text)
+        return (LAST_STAGE if turn.passed else QUIZ_STAGE), turn.text, turn.attempts
+    if next_stage(current, state) == QUIZ_STAGE:
+        telemetry.note_call_activity()
+        return QUIZ_STAGE, weather_quiz.enter_text(quiz, state), 0
+    return None
+
+
 # 동기 Ollama 호출이 서버 이벤트 루프를 막지 않도록 def(스레드풀)로 둔다
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(request: ChatRequest):
+    quiz = quiz_turn(request)
+    if quiz:
+        stage, reply, _ = quiz
+        return ChatResponse(reply=reply, alarm_can_end=stage == LAST_STAGE, conversation_level=stage)
     model = request.model or DEFAULT_MODEL
     stage, system_prompt, messages = prepare_turn(request)
     reply = generate_reply(
@@ -724,6 +766,9 @@ def ndjson(event: dict) -> str:
 def chat_stream(request: ChatRequest):
     """답변을 문장 단위로 보낸다. 화면은 첫 문장이 오자마자 읽기 시작할 수 있다.
     이벤트(한 줄에 JSON 하나): meta(단계) → sentence(문장)… → done, 실패하면 error"""
+    quiz = quiz_turn(request)
+    if quiz:
+        return StreamingResponse(quiz_events(request, *quiz), media_type="application/x-ndjson")
     model = request.model or DEFAULT_MODEL
     stage, system_prompt, messages = prepare_turn(request)
 
@@ -732,7 +777,7 @@ def chat_stream(request: ChatRequest):
         # user_content: 모델에 실제로 보낸 사용자 메시지(지시문 포함). 화면이 이걸 대화 기록에 저장해 다음 턴에
         # 그대로 보내면, 앞부분이 이번 프롬프트와 똑같아져 Ollama가 처리 결과를 재사용한다 (첫 소리 약 0.5초 단축)
         yield ndjson({"type": "meta", "conversation_level": stage, "alarm_can_end": stage == LAST_STAGE,
-                      "user_content": messages[-1]["content"]})
+                      "user_content": messages[-1]["content"], "quiz_attempts": 0})
         stats = {}
         try:
             for phrase in stream_reply(
@@ -746,11 +791,21 @@ def chat_stream(request: ChatRequest):
     return StreamingResponse(events(), media_type="application/x-ndjson")
 
 
-def initial_turn(user_name: str, user_schedule: str, weather_info: str, user_id: str = ""):
+def quiz_events(request: ChatRequest, stage: int, reply: str, attempts: int):
+    """퀴즈 대답을 스트리밍과 같은 형식으로 보낸다. 문장 단위로 나눠 화면이 바로 읽기 시작하게 한다"""
+    yield ndjson({"type": "meta", "conversation_level": stage, "alarm_can_end": stage == LAST_STAGE,
+                  "user_content": request.message, "quiz_attempts": attempts})
+    for sentence in re.split(r"(?<=[.!?])\s+", reply):
+        if sentence:
+            yield ndjson({"type": "sentence", "text": sentence})
+    yield ndjson({"type": "done", "stats": {}})
+
+
+def initial_turn(user_name: str, user_schedule: str, weather_info: str, user_id: str = "", step_goal: int = 0):
     # 알람이 울릴 때 최신 프로파일을 읽고, 이 통화가 끝날 때까지 그대로 쓴다
     telemetry.note_call_activity()
     profile = profile_context(user_id, user_name, refresh=True)
-    system_prompt = build_system_prompt(user_name, user_schedule, weather_info, profile)
+    system_prompt = build_system_prompt(user_name, user_schedule, weather_info, profile, step_goal)
     prompt = "(알람이 울려 방금 전화를 걸었습니다. 첫 인사를 해 주세요.)" + build_turn_directive(
         user_schedule, weather_info, stage=0, ask_time=True
     )
@@ -764,8 +819,9 @@ def initial_message(
     user_schedule: str = "",
     model: str = None,
     user_id: str = "",
+    step_goal: int = 0,
 ):
-    system_prompt, messages = initial_turn(user_name, user_schedule, weather_info, user_id)
+    system_prompt, messages = initial_turn(user_name, user_schedule, weather_info, user_id, step_goal)
     model = model or DEFAULT_MODEL
     reply = generate_reply(model, system_prompt, messages, "", stage=0, user_name=user_name, first=True)
     # 첫 인사를 다시 생성했거나 다듬었으면 Ollama 캐시에 남은 내용이 실제 대화 기록과 달라, 첫 대답이 약 2초 늦어진다.
@@ -781,13 +837,13 @@ def initial_message(
 
 @app.post("/api/warmup")
 def warmup(model: str = None, user_name: str = "", user_schedule: str = "", weather_info: str = "",
-           user_id: str = ""):
+           user_id: str = "", step_goal: int = 0):
     # 알람 직전에 모델을 메모리에 올린다. 사용자 정보가 있으면 실제 시스템 프롬프트를 미리 처리해 두어
     # 첫 인사와 첫 대답에서 프롬프트 처리(약 1.8초)를 Ollama 캐시로 건너뛰게 한다.
     telemetry.note_call_activity()
     try:
         system = build_system_prompt(
-            user_name, user_schedule, weather_info, profile_context(user_id, user_name, refresh=True)
+            user_name, user_schedule, weather_info, profile_context(user_id, user_name, refresh=True), step_goal,
         ) if user_name else ""
         messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": "안녕"}]
         ollama_chat(model or DEFAULT_MODEL, messages, {"num_predict": 1})
@@ -815,6 +871,8 @@ async def list_models():
 # 텔레메트리 수신과 사용자 프로파일 (telemetry.py). 분류·생성과 같은 GPU 설정으로 Ollama를 부르게 한다
 telemetry.init(ollama_chat, DEFAULT_MODEL)
 app.include_router(telemetry.router)
+# 구글 캘린더 비공개 iCal 주소에서 오늘 일정 읽기 (gcalendar.py)
+app.include_router(gcalendar.router)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 

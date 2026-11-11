@@ -131,6 +131,7 @@ function sessionCard(s) {
     `평균 대답 지연 ${c.latency_avg_sec == null ? '-' : c.latency_avg_sec + '초'}`,
     c.snooze_count ? `다시 알림 ${c.snooze_count}번` : null,
     c.ended_by === 'closed' ? '통화 중 앱·탭을 닫음' : null,
+    c.ended_by === 'steps' ? '목표 걸음 수를 채워 종료' : null,
   ].filter(Boolean).join(' · ') : '통화 기록 없음 (통화 후 행동만 들어옴)';
   const turns = c?.utterances?.length || 0;
   return el('details', 'bg-gray-900 border border-gray-800 rounded-2xl p-4', null, [

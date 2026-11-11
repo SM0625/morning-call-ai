@@ -112,11 +112,31 @@
           class="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 resize-none transition"></textarea>
       </div>
 
+      <!-- Google Calendar: 알람이 울릴 때 그날 일정을 읽어 위 일정에 더한다 -->
+      <div>
+        <label class="block text-xs font-medium text-gray-400 mb-1.5">구글 캘린더 <span class="text-gray-600">(선택)</span></label>
+        <input id="inp-ical" type="url" placeholder="비공개 주소(iCal 형식)를 붙여 넣으세요"
+          class="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 transition"/>
+        <details class="text-xs text-gray-500 mt-1">
+          <summary class="cursor-pointer select-none">주소 찾는 법</summary>
+          <p class="mt-1">PC에서 구글 캘린더 → 설정(톱니바퀴) → 왼쪽 '내 캘린더의 설정'에서 캘린더 선택 → '캘린더 통합'의 <b>비공개 주소(iCal 형식)</b>를 복사하세요. 알람이 울릴 때 그날 일정을 읽어 AI가 깨우면서 말해 줍니다.</p>
+          <p class="mt-1">이 주소를 아는 사람은 누구나 일정을 볼 수 있으니 다른 사람에게 보여 주지 마세요.</p>
+        </details>
+      </div>
+
       <!-- Alarm Time -->
       <div>
         <label class="block text-xs font-medium text-gray-400 mb-1.5">알람 시간</label>
         <input id="inp-time" type="time" value="07:30"
           class="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 transition text-white"/>
+      </div>
+
+      <!-- Step goal: 통화 중 이만큼 걸으면 바로 통화가 끝난다 (걸음은 안드로이드 앱에서만 셀 수 있다) -->
+      <div>
+        <label class="block text-xs font-medium text-gray-400 mb-1.5">목표 걸음 수 <span class="text-gray-600">(앱 전용 · 0이면 끔)</span></label>
+        <input id="inp-steps" type="number" min="0" max="1000" step="5" value="30"
+          class="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 transition text-white"/>
+        <p class="text-xs text-gray-600 mt-1">통화 중 이만큼 걸으면 대화를 마치지 않아도 바로 통화가 끝나요.</p>
       </div>
 
       <!-- Error -->
@@ -219,7 +239,7 @@
     <div class="w-12 h-12 rounded-full bg-indigo-600 flex items-center justify-center text-xl glow-anim flex-shrink-0">🤖</div>
     <div class="flex-1 min-w-0">
       <div class="font-semibold">AI 모닝콜 비서</div>
-      <div class="text-green-400 text-xs">통화 중 · <span id="call-timer">00:00</span></div>
+      <div class="text-green-400 text-xs">통화 중 · <span id="call-timer">00:00</span><span id="call-steps" class="hidden"></span></div>
     </div>
     <!-- Level indicator -->
     <div class="flex gap-1">
@@ -227,6 +247,7 @@
       <div id="lvl-1" class="w-2 h-2 rounded-full bg-gray-700"></div>
       <div id="lvl-2" class="w-2 h-2 rounded-full bg-gray-700"></div>
       <div id="lvl-3" class="w-2 h-2 rounded-full bg-gray-700"></div>
+      <div id="lvl-4" class="w-2 h-2 rounded-full bg-gray-700"></div>
     </div>
   </div>
 
@@ -331,6 +352,8 @@ const S = {
 const NATIVE = window.MorningCallApp || null;
 const SILENT_MESSAGE = '(대답 없음)';  // 서버가 "말이 없음"으로 인식하는 약속된 메시지
 const MAX_SILENT_NUDGES = 5;           // 대답이 없을 때 AI가 다시 깨우는 최대 횟수
+// 대화 단계: 0 기상 확인, 1 일정, 2 날씨·침대, 3 날씨 퀴즈, 4 마무리 (main.py와 같다)
+const LAST_STAGE = 4;
 
 function apiUrl(path) {
   return (NATIVE ? NATIVE.getServerUrl().replace(/\/+$/, '') : '') + path;
@@ -458,7 +481,6 @@ window.onNativeWakeReport = () => flushWakeReports();
 window.onNativeAlarm = () => {
   loadSaved();
   applySettings();
-  S.weatherPromise = fetchWeather();
   triggerAlarm();
 };
 
@@ -700,7 +722,7 @@ function addMessage(role, text) {
 }
 
 function updateLevelIndicators(level) {
-  for (let i = 0; i <= 3; i++) {
+  for (let i = 0; i <= LAST_STAGE; i++) {
     const el = document.getElementById(`lvl-${i}`);
     el.className = `w-2 h-2 rounded-full ${i <= level ? 'bg-indigo-500' : 'bg-gray-700'}`;
   }
@@ -711,7 +733,9 @@ function loadSaved() {
   document.getElementById('inp-model').value    = localStorage.getItem('mc_model') || 'gemma3:4b';
   document.getElementById('inp-name').value     = localStorage.getItem('mc_name') || '';
   document.getElementById('inp-schedule').value = localStorage.getItem('mc_schedule') || '';
+  document.getElementById('inp-ical').value     = localStorage.getItem('mc_ical') || '';
   document.getElementById('inp-time').value     = localStorage.getItem('mc_time') || '07:30';
+  document.getElementById('inp-steps').value    = localStorage.getItem('mc_step_goal') ?? '30';
   if (NATIVE) {
     document.getElementById('server-field').classList.remove('hidden');
     document.getElementById('server-current').textContent = NATIVE.getServerUrl() || '(미설정)';
@@ -723,11 +747,16 @@ function applySettings() {
   const model   = document.getElementById('inp-model').value;
   const name    = document.getElementById('inp-name').value.trim() || '사용자';
   const schedule= document.getElementById('inp-schedule').value.trim();
+  const ical    = document.getElementById('inp-ical').value.trim();
   const time    = document.getElementById('inp-time').value;
   const errEl   = document.getElementById('setup-error');
   const showErr = (msg) => { errEl.textContent = msg; errEl.classList.remove('hidden'); return false; };
 
   if (!time) return showErr('알람 시간을 선택해주세요.');
+  // 캘린더 웹 주소(calendar.google.com/calendar/u/0/r)를 붙여 넣는 실수가 많아 미리 막는다
+  if (ical && !/calendar\.google\.com\/calendar\/ical\//.test(ical)) {
+    return showErr("구글 캘린더 설정의 '비공개 주소(iCal 형식)'를 붙여 넣어 주세요. (주소 찾는 법 참고)");
+  }
   if (NATIVE) {
     // 새 주소를 입력했을 때만 바꾸고, 비워 두면 지금 주소(기본값 또는 이전에 입력한 값)를 그대로 쓴다
     const server = document.getElementById('inp-server').value.trim();
@@ -742,16 +771,76 @@ function applySettings() {
   }
   errEl.classList.add('hidden');
 
-  S.model = model; S.userName = name; S.schedule = schedule; S.alarmTime = time;
+  const stepGoal = Math.max(0, Math.min(1000, parseInt(document.getElementById('inp-steps').value, 10) || 0));
+  S.model = model; S.userName = name; S.manualSchedule = schedule; S.icalUrl = ical; S.alarmTime = time;
+  S.stepGoal = stepGoal;
+  localStorage.setItem('mc_step_goal', String(stepGoal));
   localStorage.setItem('mc_model', model);
   localStorage.setItem('mc_name', name);
   localStorage.setItem('mc_schedule', schedule);
+  localStorage.setItem('mc_ical', ical);
   localStorage.setItem('mc_time', time);
 
   document.getElementById('sb-name').textContent = name;
-  document.getElementById('sb-schedule').textContent = schedule || '특별한 일정 없음';
+  updateSchedule();
   document.getElementById('alarm-time-display').textContent = time;
   return true;
+}
+
+// ─── 구글 캘린더 ──────────────────────────────────────────────────────────────
+// 서버(gcalendar.py)를 거쳐 비공개 iCal 주소에서 그날 일정을 읽는다. 알람은 보통 전날 밤에 맞추므로 그때 읽으면
+// '오늘' 일정이 들어간다. 그래서 알람을 맞출 때는 주소가 맞는지만 확인하고, 일정은 예열·알람 때 그날 기준으로 읽는다
+const CALENDAR_CACHE_KEY = 'mc_calendar_cache';
+
+function todayKey() {
+  const d = new Date();
+  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+}
+
+// AI 지시문과 대기 화면에 쓰는 일정 = 캘린더 일정 + 직접 입력한 일정
+function updateSchedule() {
+  S.schedule = [S.calendarSchedule, S.manualSchedule].filter(Boolean).join(', ');
+  let text = S.schedule || '특별한 일정 없음';
+  if (S.icalUrl && S.calendarError) text += ` · 구글 캘린더 오류: ${S.calendarError}`;
+  else if (S.icalUrl && !S.calendarSchedule) text += ' · 구글 캘린더 연결됨 (알람 때 그날 일정을 불러와요)';
+  document.getElementById('sb-schedule').textContent = text;
+}
+
+async function fetchCalendar() {
+  S.calendarError = '';
+  if (!S.icalUrl) return '';
+  try {
+    const res = await fetch(apiUrl('/api/v1/calendar/today'), {
+      method: 'POST',
+      headers: { ...API_HEADERS, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ical_url: S.icalUrl, tz_offset_min: -new Date().getTimezoneOffset() }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `오류 ${res.status}`);
+    // 알람 때 서버나 구글에 잠깐 연결이 안 될 수 있어, 그날 읽은 일정을 남겨 둔다
+    localStorage.setItem(CALENDAR_CACHE_KEY, JSON.stringify({ day: todayKey(), summary: data.summary }));
+    return data.summary;
+  } catch (e) {
+    S.calendarError = e.message;
+    try {
+      const cached = JSON.parse(localStorage.getItem(CALENDAR_CACHE_KEY));
+      if (cached && cached.day === todayKey()) return cached.summary;
+    } catch {}
+    return '';
+  }
+}
+
+// 예열·알람 때: 그날 일정을 읽어 AI 지시문에 넣는다
+async function loadTodayCalendar() {
+  S.calendarSchedule = await fetchCalendar();
+  updateSchedule();
+}
+
+// 알람을 맞출 때: 주소가 맞는지만 확인한다
+async function checkCalendar() {
+  S.calendarSchedule = '';
+  await fetchCalendar();
+  updateSchedule();
 }
 
 function startAlarm() {
@@ -760,6 +849,7 @@ function startAlarm() {
   showView('standby');
   startClock();
   S.weatherPromise = fetchWeather();
+  checkCalendar();
   if (NATIVE) {
     // 안드로이드 알람으로 등록해야 화면이 꺼져 있거나 앱이 닫혀 있어도 울린다
     const [h, m] = S.alarmTime.split(':').map(Number);
@@ -804,7 +894,9 @@ function startAlarmCheck() {
     const left = alarm - now;
     if (!warmedUp && left > 0 && left <= 120000) {
       warmedUp = true;
-      warmupModel();
+      // 예열에 그날 일정과 아침 날씨까지 넣어야 알람 때의 시스템 프롬프트와 같아져 캐시가 재사용된다
+      S.weatherPromise = fetchWeather();
+      Promise.all([loadTodayCalendar(), S.weatherPromise]).finally(warmupModel);
     }
     if (now.getHours() === ah && now.getMinutes() === am && now.getSeconds() < 5) {
       triggerAlarm();
@@ -812,10 +904,18 @@ function startAlarmCheck() {
   }, 1000);
 }
 
+// 통화 중에는 첫 인사 때의 일정·날씨를 그대로 쓴다. 통화 도중 날씨가 늦게 도착해 AI 지시문이 바뀌면
+// Ollama 캐시가 깨져 그 턴의 첫 소리가 1초 이상 늦어진다
+function callInfo() {
+  return S.callInfo || { schedule: S.schedule, weatherInfo: S.weatherInfo, weather: S.weather };
+}
+
 function userParams() {
+  const info = callInfo();
   return new URLSearchParams({
-    user_name: S.userName, user_schedule: S.schedule, weather_info: S.weatherInfo, model: S.model,
+    user_name: S.userName, user_schedule: info.schedule, weather_info: info.weatherInfo, model: S.model,
     user_id: userId(),  // 서버가 이 사용자의 프로파일을 시스템 프롬프트에 넣는다
+    step_goal: activeStepGoal(),  // AI가 "30걸음만 걸으면 끊어 드릴게요"처럼 쓸 수 있게
   });
 }
 
@@ -826,8 +926,9 @@ function warmupModel() {
 
 // 첫 인사는 벨이 울리는 동안 미리 받아 둔다. 전화를 받자마자 바로 말할 수 있다.
 async function prefetchInitialMessage() {
-  // 날씨가 늦게 오면 첫 인사를 기다리게 하지 않는다 (최대 1.5초)
-  await Promise.race([S.weatherPromise, new Promise(r => setTimeout(r, 1500))]);
+  // 날씨·캘린더가 늦게 오면 첫 인사를 기다리게 하지 않는다 (최대 2.5초. 벨이 울리는 동안이라 사용자는 기다리지 않는다)
+  await Promise.race([Promise.all([S.weatherPromise, S.calendarPromise]), new Promise(r => setTimeout(r, 2500))]);
+  S.callInfo = { schedule: S.schedule, weatherInfo: S.weatherInfo, weather: S.weather };
   const res = await fetch(apiUrl(`/api/initial-message?${userParams()}`), { headers: API_HEADERS });
   if (!res.ok) throw new Error((await res.json()).detail);
   return res.json();  // { message, user_content }
@@ -838,6 +939,10 @@ function triggerAlarm() {
   clearInterval(S.clockInterval);
   showView('ringing');
   startRingSound();
+  S.callInfo = null;
+  S.calendarPromise = loadTodayCalendar();
+  // 알람을 맞출 때(보통 전날 밤) 받은 날씨가 아니라 지금 날씨를 쓴다
+  S.weatherPromise = fetchWeather();
   S.initialPromise = prefetchInitialMessage();
   S.initialPromise.catch(() => {});  // 실패는 전화를 받을 때 처리
 }
@@ -896,9 +1001,12 @@ async function acceptCall() {
   S.conversationLevel = 0;
   S.alarmCanEnd = false;
   S.silentCount = 0;
+  S.quizAttempts = 0;
+  S.callEnded = false;
   S.turn?.controller.abort();
   S.turn = null;
   CallTelemetry.start();
+  startStepGoal();
 
   // Disable end call button
   const btnEnd = document.getElementById('btn-end-call');
@@ -1085,6 +1193,7 @@ async function handleUserSpeech(text, { silent = false, input = 'voice' } = {}) 
       if (ev.user_content) S.conversationHistory[userIndex].content = ev.user_content;
       S.conversationLevel = ev.conversation_level;
       S.alarmCanEnd = ev.alarm_can_end;
+      S.quizAttempts = ev.quiz_attempts ?? 0;
       updateLevelIndicators(S.conversationLevel);
       if (S.alarmCanEnd) enableEndCall();
     } else if (ev.type === 'sentence') {
@@ -1114,11 +1223,14 @@ async function handleUserSpeech(text, { silent = false, input = 'voice' } = {}) 
         message: text,
         history,
         user_name: S.userName,
-        user_schedule: S.schedule,
-        weather_info: S.weatherInfo,
+        user_schedule: callInfo().schedule,
+        weather_info: callInfo().weatherInfo,
         conversation_level: S.conversationLevel,
         model: S.model,
         user_id: userId(),
+        step_goal: activeStepGoal(),
+        weather: callInfo().weather,  // 날씨 퀴즈용 숫자 날씨 (없으면 퀴즈를 건너뛴다)
+        quiz_attempts: S.quizAttempts || 0,
       }),
     });
     if (!res.ok) {
@@ -1163,12 +1275,72 @@ function enableEndCall() {
   btnEnd.className = 'flex-1 flex items-center justify-center gap-2 bg-red-600 hover:bg-red-500 py-3.5 rounded-xl text-sm font-semibold transition cursor-pointer';
 }
 
-function endCall() {
-  if (!S.alarmCanEnd) return;
+// ─── 걸음 수 목표 ─────────────────────────────────────────────────────────────
+// 걸음은 안드로이드 앱에서만 셀 수 있다. 통화 중 목표 걸음 수를 채우면 대화를 마치지 않아도 통화를 끝낸다
+function activeStepGoal() {
+  return NATIVE && NATIVE.startStepCount && S.stepGoal > 0 ? S.stepGoal : 0;
+}
+
+function startStepGoal() {
+  S.steps = 0;
+  S.endingByWalk = false;
+  const el = document.getElementById('call-steps');
+  if (!activeStepGoal()) { el.classList.add('hidden'); return; }
+  el.textContent = ` · 🚶 0/${S.stepGoal}걸음`;
+  el.classList.remove('hidden');
+  NATIVE.startStepCount();
+}
+
+function stopStepGoal() {
+  if (NATIVE && NATIVE.stopStepCount) NATIVE.stopStepCount();
+}
+
+window.onNativeSteps = (n) => {
+  if (!activeStepGoal() || S.endingByWalk || S.callEnded) return;
+  S.steps = n;
+  document.getElementById('call-steps').textContent = ` · 🚶 ${Math.min(n, S.stepGoal)}/${S.stepGoal}걸음`;
+  if (n >= S.stepGoal) finishByWalking();
+};
+
+window.onNativeStepError = (reason) => {
+  document.getElementById('call-steps').classList.add('hidden');
+  addNotice(reason === 'permission'
+    ? '걸음 수를 세려면 "신체 활동" 권한이 필요해요. 이번 통화는 대화로 끝낼 수 있어요.'
+    : '이 폰에는 걸음 센서가 없어 대화로 통화를 끝낼 수 있어요.');
+};
+
+// 목표 걸음을 채우면 하던 대답을 멈추고, 칭찬하며 통화를 끝낸다
+function finishByWalking() {
+  S.endingByWalk = true;
+  stopStepGoal();
+  // 진행 중인 대답은 멈춘다. S.turn을 비워 두면 멈춘 대답이 오류로 표시되지 않는다
+  const turn = S.turn;
+  S.turn = null;
+  if (turn && !turn.finished) { turn.finished = true; turn.controller.abort(); }
+  stopListening();
+  S.alarmCanEnd = true;
+  enableEndCall();
+  updateLevelIndicators(LAST_STAGE);
+  const line = `${S.steps}걸음이나 걸으셨네요! 이제 완전히 일어나셨군요. 그럼 전화 끊을게요, 좋은 하루 보내세요!`;
+  addMessage('assistant', line);
+  S.conversationHistory.push({ role: 'assistant', content: line });
+  showStatus('speaking');
+  S.isSpeaking = true;
+  Voice.stopSpeaking();
+  SpeechQueue.begin(() => { S.isSpeaking = false; hideStatus(); endCall('steps'); });
+  SpeechQueue.push(line);
+  SpeechQueue.close();
+}
+
+// endedBy: 'button'(통화 종료 버튼) | 'steps'(목표 걸음 수 달성으로 자동 종료)
+function endCall(endedBy = 'button') {
+  if (!S.alarmCanEnd || S.callEnded) return;
+  S.callEnded = true;
+  stopStepGoal();
   clearInterval(S.callTimerInterval);
   Voice.stopSpeaking();
   stopListening();
-  const sessionId = CallTelemetry.finish('button');
+  const sessionId = CallTelemetry.finish(endedBy);
   if (sessionId) startWakeMonitor(sessionId);
 
   const now = new Date();
@@ -1178,38 +1350,96 @@ function endCall() {
 }
 
 // ─── Weather ──────────────────────────────────────────────────────────────────
-async function fetchWeather() {
-  const weatherCodes = {
-    0:'맑음',1:'대체로 맑음',2:'부분적으로 흐림',3:'흐림',
-    45:'안개',48:'안개',51:'가벼운 이슬비',53:'이슬비',55:'강한 이슬비',
-    61:'가벼운 비',63:'비',65:'강한 비',71:'눈',73:'눈',75:'강한 눈',
-    80:'소나기',81:'소나기',82:'강한 소나기',95:'뇌우',99:'뇌우',
-  };
-  const weatherIcons = {
-    0:'☀️',1:'🌤',2:'⛅',3:'☁️',45:'🌫',48:'🌫',
-    51:'🌦',53:'🌦',55:'🌧',61:'🌧',63:'🌧',65:'🌧',
-    71:'🌨',73:'❄️',75:'❄️',80:'🌦',81:'🌦',82:'⛈',95:'⛈',99:'⛈',
-  };
+// 위치: 브라우저(앱 WebView 포함) → 앱이 마지막으로 알던 위치 → 지난번에 쓴 위치 → 서울 순서로 찾는다.
+// 예전에는 위치를 못 구하면 말없이 서울 날씨를 썼고, 위치 요청에 시간 제한이 없어 끝없이 기다릴 수도 있었다
+const SEOUL = { lat: 37.5665, lon: 126.9780 };
+const LOCATION_KEY = 'mc_last_location';
+const WEATHER_CODES = {
+  0:'맑음',1:'대체로 맑음',2:'부분적으로 흐림',3:'흐림',
+  45:'안개',48:'안개',51:'가벼운 이슬비',53:'이슬비',55:'강한 이슬비',56:'어는 이슬비',57:'어는 이슬비',
+  61:'가벼운 비',63:'비',65:'강한 비',66:'어는 비',67:'어는 비',71:'약한 눈',73:'눈',75:'강한 눈',77:'싸락눈',
+  80:'소나기',81:'소나기',82:'강한 소나기',85:'눈 소나기',86:'강한 눈 소나기',95:'뇌우',96:'우박 동반 뇌우',99:'우박 동반 뇌우',
+};
+const WEATHER_ICONS = {
+  0:'☀️',1:'🌤',2:'⛅',3:'☁️',45:'🌫',48:'🌫',51:'🌦',53:'🌦',55:'🌧',56:'🌧',57:'🌧',
+  61:'🌧',63:'🌧',65:'🌧',66:'🌧',67:'🌧',71:'🌨',73:'❄️',75:'❄️',77:'🌨',80:'🌦',81:'🌦',82:'⛈',85:'🌨',86:'🌨',
+  95:'⛈',96:'⛈',99:'⛈',
+};
 
-  const pos = await new Promise(r => {
+function browserLocation() {
+  return new Promise((resolve) => {
+    if (!navigator.geolocation) { resolve(null); return; }
     navigator.geolocation.getCurrentPosition(
-      p => r({ lat: p.coords.latitude, lon: p.coords.longitude }),
-      () => r({ lat: 37.5665, lon: 126.9780 })
+      p => resolve({ lat: p.coords.latitude, lon: p.coords.longitude }),
+      () => resolve(null),
+      // 날씨에는 1km 정도면 충분하다. 30분 안의 위치는 다시 구하지 않는다
+      { timeout: 10000, maximumAge: 30 * 60000, enableHighAccuracy: false },
     );
   });
+}
 
+// { lat, lon, source: 'now' | 'saved' | 'seoul' }
+async function getLocation() {
+  let pos = await browserLocation();
+  if (!pos && NATIVE && NATIVE.getLastLocation) {
+    try { pos = JSON.parse(NATIVE.getLastLocation() || 'null'); } catch {}
+  }
+  if (pos) {
+    // 외부 서비스에는 소수 둘째 자리(약 1km)까지만 보낸다
+    pos = { lat: Math.round(pos.lat * 100) / 100, lon: Math.round(pos.lon * 100) / 100 };
+    localStorage.setItem(LOCATION_KEY, JSON.stringify(pos));
+    return { ...pos, source: 'now' };
+  }
+  try {
+    const saved = JSON.parse(localStorage.getItem(LOCATION_KEY));
+    if (saved) return { ...saved, source: 'saved' };
+  } catch {}
+  return { ...SEOUL, source: 'seoul' };
+}
+
+// "서울특별시 명동"처럼 시·도와 동네 이름
+async function placeName(pos) {
+  try {
+    const res = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${pos.lat}`
+      + `&longitude=${pos.lon}&localityLanguage=ko`);
+    const d = await res.json();
+    return [...new Set([d.city || d.principalSubdivision, d.locality].filter(Boolean))].join(' ');
+  } catch {
+    return '';
+  }
+}
+
+async function fetchWeather() {
+  const pos = await getLocation();
   try {
     const url = `https://api.open-meteo.com/v1/forecast?latitude=${pos.lat}&longitude=${pos.lon}`
-      + `&current=temperature_2m,weather_code&timezone=Asia%2FSeoul&forecast_days=1`;
-    const res = await fetch(url);
-    const data = await res.json();
-    const temp = Math.round(data.current.temperature_2m);
+      + `&current=temperature_2m,apparent_temperature,weather_code`
+      + `&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max`
+      + `&timezone=auto&forecast_days=1`;
+    const [data, place] = await Promise.all([fetch(url).then(r => r.json()), placeName(pos)]);
     const code = data.current.weather_code;
-    const desc = weatherCodes[code] ?? '보통';
-    const icon = weatherIcons[code] ?? '🌤';
-    S.weatherInfo = `${desc} ${temp}°C`;
-    document.getElementById('sb-weather').textContent = `${icon} ${desc} · ${temp}°C`;
+    const w = {
+      place: pos.source === 'seoul' ? '서울' : (place || ''),
+      temp: Math.round(data.current.temperature_2m),
+      feels: Math.round(data.current.apparent_temperature),
+      max: Math.round(data.daily.temperature_2m_max[0]),
+      min: Math.round(data.daily.temperature_2m_min[0]),
+      rain: data.daily.precipitation_probability_max[0] ?? 0,
+      code,
+      desc: WEATHER_CODES[code] ?? '보통',
+      source: pos.source,
+    };
+    S.weather = w;
+    // AI 지시문에 들어가는 날씨. 체감 온도는 실제와 3도 이상 다를 때만 넣는다
+    const feels = Math.abs(w.feels - w.temp) >= 3 ? ` (체감 ${w.feels}°C)` : '';
+    S.weatherInfo = `${w.place ? w.place + ' ' : ''}${w.desc}, 지금 ${w.temp}°C${feels}, `
+      + `최저 ${w.min}°C / 최고 ${w.max}°C, 강수확률 ${w.rain}%`;
+    const note = { saved: ' · 지난번 위치 기준', seoul: ' · 위치를 몰라 서울 기준' }[w.source] || '';
+    document.getElementById('sb-weather').textContent =
+      `${WEATHER_ICONS[code] ?? '🌤'} ${w.place ? w.place + ' · ' : ''}${w.desc} ${w.temp}°C `
+      + `(${w.min}°/${w.max}°) · 비 ${w.rain}%${note}`;
   } catch {
+    S.weather = null;
     S.weatherInfo = '';
     document.getElementById('sb-weather').textContent = '날씨 정보 없음';
   }
