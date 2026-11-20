@@ -7,15 +7,14 @@ rem 다른 주소를 넣으려면: build-apk.bat http://주소:8000
 set "PROJECT=%~dp0"
 if "%PROJECT:~-1%"=="\" set "PROJECT=%PROJECT:~0,-1%"
 
-if not defined JAVA_HOME (
-  for /d %%D in ("C:\Program Files\Microsoft\jdk-17*") do set "JAVA_HOME=%%D"
-)
+rem 빌드 도구(Gradle 8.7)는 JDK 17에서만 돈다. 시스템 JAVA_HOME이 다른 버전이어도 JDK 17이 있으면 그걸 쓴다
+for /d %%D in ("C:\Program Files\Microsoft\jdk-17*" "C:\Program Files\Eclipse Adoptium\jdk-17*") do set "JAVA_HOME=%%~D"
 if not defined ANDROID_HOME set "ANDROID_HOME=%LOCALAPPDATA%\Android\Sdk"
 set "GRADLE="
 for /d %%D in ("%LOCALAPPDATA%\Android\gradle\gradle-*") do set "GRADLE=%%D\bin\gradle.bat"
 
 if not defined JAVA_HOME (
-  echo [오류] JDK 17을 찾지 못했어요. 설치: winget install Microsoft.OpenJDK.17
+  echo [오류] JDK 17을 찾지 못했어요. 설치: winget install EclipseAdoptium.Temurin.17.JDK
   goto :fail
 )
 if not exist "%ANDROID_HOME%\platforms" (
@@ -49,7 +48,12 @@ if not "%RESULT%"=="0" (
   goto :fail
 )
 
-copy /Y "%PROJECT%\android\app\build\outputs\apk\debug\app-debug.apk" "%USERPROFILE%\Desktop\AI모닝콜.apk" >nul
+rem 빌드 결과는 OneDrive 밖에 있다 (android\build.gradle.kts). 바탕화면은 OneDrive 아래일 수 있어 실제 위치를 묻는다
+for /f "usebackq delims=" %%P in (`powershell -NoProfile -Command "[Environment]::GetFolderPath('Desktop')"`) do set "DESKTOP=%%P"
+copy /Y "%LOCALAPPDATA%\morningcall-build\app\outputs\apk\debug\app-debug.apk" "%DESKTOP%\AI모닝콜.apk" >nul || (
+  echo [오류] APK를 바탕화면에 복사하지 못했어요: %DESKTOP%
+  goto :fail
+)
 echo.
 echo  완료: 바탕화면의 AI모닝콜.apk 를 폰에 설치하세요.
 echo.

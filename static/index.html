@@ -66,8 +66,25 @@
     </div>
 
     <div class="bg-gray-900 rounded-2xl p-6 space-y-5 border border-gray-800">
+      <!-- 폰 AI (앱 전용): 모델을 받아 두면 PC 서버·인터넷이 꺼져 있어도 폰 안에서 통화한다 -->
+      <div id="phone-ai" class="hidden bg-indigo-950/60 border border-indigo-800/50 rounded-xl px-4 py-3 space-y-2">
+        <div class="flex items-center justify-between gap-2">
+          <div>
+            <div class="text-xs font-semibold text-indigo-300 mb-0.5">📱 폰 AI · Gemma 4 E2B</div>
+            <div id="phone-ai-status" class="text-xs text-gray-400">확인 중…</div>
+          </div>
+          <button id="phone-ai-btn" onclick="PhoneAI.download()"
+            class="hidden flex-shrink-0 bg-indigo-600 hover:bg-indigo-500 px-3 py-2 rounded-lg text-xs font-semibold transition">
+            받기
+          </button>
+        </div>
+        <div id="phone-ai-bar" class="hidden h-1.5 bg-gray-700 rounded-full overflow-hidden">
+          <div id="phone-ai-fill" class="h-full bg-indigo-500 transition-all" style="width:0%"></div>
+        </div>
+      </div>
+
       <!-- Ollama notice -->
-      <div class="flex items-start gap-3 bg-indigo-950/60 border border-indigo-800/50 rounded-xl px-4 py-3">
+      <div id="server-ai" class="flex items-start gap-3 bg-indigo-950/60 border border-indigo-800/50 rounded-xl px-4 py-3">
         <span class="text-lg mt-0.5">🦙</span>
         <div>
           <div class="text-xs font-semibold text-indigo-300 mb-0.5">Ollama 로컬 AI 사용 중 (무료)</div>
@@ -75,8 +92,8 @@
         </div>
       </div>
 
-      <!-- Model selector -->
-      <div>
+      <!-- Model selector (PC 서버의 Ollama 모델. 앱에서는 폰 AI를 쓰므로 숨긴다) -->
+      <div id="model-field">
         <label class="block text-xs font-medium text-gray-400 mb-1.5">AI 모델</label>
         <select id="inp-model"
           class="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 transition text-white">
@@ -362,6 +379,87 @@ function apiUrl(path) {
 // 서버를 ngrok 무료 주소로 공개하면 브라우저(WebView) 요청에 경고 페이지를 대신 돌려준다. 이 헤더가 있으면 건너뛴다
 const API_HEADERS = { 'ngrok-skip-browser-warning': '1' };
 
+// ─── 폰 AI (앱 전용) ───────────────────────────────────────────────────────────
+// 앱에 Gemma 모델을 받아 두면 대화를 폰 안에서 처리한다 (서버와 같은 대화 엔진 engine/dialog.py를
+// engine/phone.py로 부르고, AI만 폰의 Gemma를 쓴다). 그래서 PC 서버·와이파이가 꺼져 있어도 깨울 수 있다.
+// 모델을 아직 받지 않았으면 예전처럼 PC 서버를 쓴다. 주고받는 이벤트 형식은 서버와 같다.
+const PhoneAI = {
+  handlers: {}, seq: 0,
+  supported() { return !!(NATIVE && NATIVE.aiStatus); },
+  status() { return this.supported() ? NATIVE.aiStatus() : 'none'; },
+  // 받아 두었으면 폰에서 처리한다. 올리는 중이면 폰(PhoneAi.kt)이 다 올릴 때까지 기다렸다가 답한다
+  usable() { return ['downloaded', 'loading', 'ready'].includes(this.status()); },
+  download() { NATIVE.aiDownload(); },
+
+  // 결과 이벤트는 window.onNativeAi(id, JSON)로 하나씩 온다
+  request(kind, payload, onEvent) {
+    const id = `ai${++this.seq}`;
+    this.handlers[id] = onEvent;
+    NATIVE.aiRequest(id, kind, JSON.stringify(payload));
+    return id;
+  },
+  cancel(id) {
+    delete this.handlers[id];
+    NATIVE.aiCancel(id);
+  },
+  initial(payload) {
+    return new Promise((resolve, reject) => this.request('initial', payload, (ev) => {
+      if (ev.type === 'error') reject(new Error(ev.detail));
+      else resolve({ message: ev.message, user_content: ev.user_content });
+    }));
+  },
+  // 서버의 /api/chat/stream과 같다: meta → sentence… → done. 끝나면 resolve, 실패하면 reject
+  chat(payload, signal, onEvent) {
+    return new Promise((resolve, reject) => {
+      const id = this.request('chat', payload, (ev) => {
+        if (ev.type === 'done') { delete this.handlers[id]; resolve(); return; }
+        try { onEvent(ev); } catch (e) { delete this.handlers[id]; reject(e); }
+      });
+      signal.addEventListener('abort', () => { this.cancel(id); reject(new DOMException('aborted', 'AbortError')); });
+    });
+  },
+
+  // 설정 화면의 상태 표시
+  render(status = this.status(), detail = NATIVE.aiDetail()) {
+    const text = {
+      none: 'PC 서버·와이파이 없이도 깨우려면 모델(2.6GB)을 받아 주세요. 와이파이에서 받는 걸 권해요.',
+      downloading: `받는 중… ${detail}%`,
+      downloaded: '준비 중…',
+      loading: '모델을 올리는 중… (10초쯤 걸려요)',
+      ready: `✅ 폰에서 대화해요 (${detail}). PC 서버가 꺼져 있어도 돼요.`,
+      error: `⚠️ ${detail} · 지금은 PC 서버를 써요.`,
+    }[status] || status;
+    document.getElementById('phone-ai-status').textContent = text;
+    document.getElementById('phone-ai-btn').classList.toggle('hidden', !['none', 'error'].includes(status));
+    document.getElementById('phone-ai-bar').classList.toggle('hidden', status !== 'downloading');
+    document.getElementById('phone-ai-fill').style.width = `${status === 'downloading' ? detail : 0}%`;
+  },
+};
+window.onNativeAi = (id, json) => {
+  const handler = PhoneAI.handlers[id];
+  if (!handler) return;  // 멈춘 대답의 남은 이벤트
+  const ev = JSON.parse(json);
+  if (ev.type === 'initial' || ev.type === 'error') delete PhoneAI.handlers[id];
+  handler(ev);
+};
+window.onNativeAiStatus = (status, detail) => PhoneAI.render(status, detail);
+
+// ─── 사용자 프로파일 ───────────────────────────────────────────────────────────
+// 서버가 지난 아침 기록으로 만든 프로파일(telemetry.py). 폰 AI는 서버 없이도 쓰도록 받아 둔 것을 쓴다
+const PROFILE_KEY = 'mc_profile';
+
+async function refreshProfile() {
+  try {
+    const res = await fetch(apiUrl(`/api/v1/profile/${encodeURIComponent(userId())}`),
+                            { headers: API_HEADERS, signal: AbortSignal.timeout(4000) });
+    if (res.ok) localStorage.setItem(PROFILE_KEY, JSON.stringify(await res.json()));
+  } catch {}  // 서버가 꺼져 있으면 마지막으로 받은 것을 쓴다
+}
+
+function savedProfile() {
+  try { return JSON.parse(localStorage.getItem(PROFILE_KEY)); } catch { return null; }
+}
+
 const END_OF_SPEECH_MS = 800;  // 중간 인식 결과가 이만큼 그대로면 말이 끝난 것으로 본다
 
 // 말하기(TTS)·듣기(STT): 앱에서는 안드로이드 음성 기능, 브라우저에서는 Web Speech API
@@ -589,7 +687,7 @@ const CallTelemetry = {
     sendTelemetry({
       ...telemetryEnvelope('call_end', c.session_id),
       user_name: S.userName,
-      model: S.model,
+      model: S.callOnPhone ? NATIVE.aiModelName() : S.model,
       alarm_time: localStorage.getItem('mc_time') || S.alarmTime,  // 스누즈로 바뀌기 전 원래 알람 시각
       call: {
         started_at: new Date(c.started).toISOString(),
@@ -740,6 +838,12 @@ function loadSaved() {
     document.getElementById('server-field').classList.remove('hidden');
     document.getElementById('server-current').textContent = NATIVE.getServerUrl() || '(미설정)';
   }
+  if (PhoneAI.supported()) {
+    document.getElementById('phone-ai').classList.remove('hidden');
+    document.getElementById('server-ai').classList.add('hidden');
+    document.getElementById('model-field').classList.add('hidden');
+    PhoneAI.render();
+  }
 }
 
 // 입력값을 검사해 S에 반영한다. 문제가 있으면 오류를 보여 주고 false
@@ -764,9 +868,9 @@ function applySettings() {
       if (!/^https?:\/\/.+/.test(server)) return showErr('PC 서버 주소를 http://로 시작하게 입력해주세요.');
       NATIVE.setServerUrl(server);
     }
-    if (!NATIVE.getServerUrl()) {
+    if (!NATIVE.getServerUrl() && !PhoneAI.usable()) {
       document.getElementById('server-field').open = true;
-      return showErr('PC 서버 주소를 찾지 못했어요. 고급 설정에서 입력해주세요.');
+      return showErr('폰 AI 모델을 받거나, 고급 설정에서 PC 서버 주소를 입력해주세요.');
     }
   }
   errEl.classList.add('hidden');
@@ -850,6 +954,7 @@ function startAlarm() {
   startClock();
   S.weatherPromise = fetchWeather();
   checkCalendar();
+  refreshProfile();  // 폰 AI가 아침에 서버 없이도 쓰도록 미리 받아 둔다
   if (NATIVE) {
     // 안드로이드 알람으로 등록해야 화면이 꺼져 있거나 앱이 닫혀 있어도 울린다
     const [h, m] = S.alarmTime.split(':').map(Number);
@@ -920,15 +1025,31 @@ function userParams() {
 }
 
 // 사용자 정보가 담긴 시스템 프롬프트까지 미리 처리해 두면 첫 대답이 빨라진다
+// (폰 AI는 앱을 열 때 이미 모델을 올려 두므로 예열하지 않는다)
 function warmupModel() {
+  if (PhoneAI.usable()) return;
   fetch(apiUrl(`/api/warmup?${userParams()}`), { method: 'POST', headers: API_HEADERS }).catch(() => {});
+}
+
+// 폰 AI에 보낼 요청: 서버 API와 같은 내용 + 프로파일(서버는 DB에서 읽지만 폰은 받아 둔 것을 쓴다)
+function phonePayload(extra = {}) {
+  const info = callInfo();
+  return {
+    user_name: S.userName, user_schedule: info.schedule, weather_info: info.weatherInfo,
+    step_goal: activeStepGoal(), profile: S.callProfile, ...extra,
+  };
 }
 
 // 첫 인사는 벨이 울리는 동안 미리 받아 둔다. 전화를 받자마자 바로 말할 수 있다.
 async function prefetchInitialMessage() {
   // 날씨·캘린더가 늦게 오면 첫 인사를 기다리게 하지 않는다 (최대 2.5초. 벨이 울리는 동안이라 사용자는 기다리지 않는다)
-  await Promise.race([Promise.all([S.weatherPromise, S.calendarPromise]), new Promise(r => setTimeout(r, 2500))]);
+  await Promise.race([Promise.all([S.weatherPromise, S.calendarPromise, S.profilePromise]),
+                      new Promise(r => setTimeout(r, 2500))]);
   S.callInfo = { schedule: S.schedule, weatherInfo: S.weatherInfo, weather: S.weather };
+  // 통화 중에는 처음 고른 쪽(폰/서버)과 프로파일을 그대로 쓴다 (서버가 통화 중 프로파일을 고정하는 것과 같다)
+  S.callOnPhone = PhoneAI.usable();
+  S.callProfile = savedProfile();
+  if (S.callOnPhone) return PhoneAI.initial(phonePayload());
   const res = await fetch(apiUrl(`/api/initial-message?${userParams()}`), { headers: API_HEADERS });
   if (!res.ok) throw new Error((await res.json()).detail);
   return res.json();  // { message, user_content }
@@ -941,6 +1062,7 @@ function triggerAlarm() {
   startRingSound();
   S.callInfo = null;
   S.calendarPromise = loadTodayCalendar();
+  S.profilePromise = refreshProfile();
   // 알람을 맞출 때(보통 전날 밤) 받은 날씨가 아니라 지금 날씨를 쓴다
   S.weatherPromise = fetchWeather();
   S.initialPromise = prefetchInitialMessage();
@@ -1215,44 +1337,21 @@ async function handleUserSpeech(text, { silent = false, input = 'voice' } = {}) 
   try {
     // Build history without the last user message (it's sent separately as `message`)
     const history = S.conversationHistory.slice(0, userIndex);
-    const res = await fetch(apiUrl('/api/chat/stream'), {
-      method: 'POST',
-      signal: turn.controller.signal,
-      headers: { ...API_HEADERS, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        message: text,
-        history,
-        user_name: S.userName,
-        user_schedule: callInfo().schedule,
-        weather_info: callInfo().weatherInfo,
-        conversation_level: S.conversationLevel,
-        model: S.model,
-        user_id: userId(),
-        step_goal: activeStepGoal(),
-        weather: callInfo().weather,  // 날씨 퀴즈용 숫자 날씨 (없으면 퀴즈를 건너뛴다)
-        quiz_attempts: S.quizAttempts || 0,
-      }),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.detail || '오류가 발생했습니다.');
-    }
-
-    // 한 줄에 JSON 이벤트 하나 (NDJSON)
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let newline;
-      while ((newline = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0, newline).trim();
-        buffer = buffer.slice(newline + 1);
-        if (line) onEvent(JSON.parse(line));
-      }
-    }
+    const body = {
+      message: text,
+      history,
+      user_name: S.userName,
+      user_schedule: callInfo().schedule,
+      weather_info: callInfo().weatherInfo,
+      conversation_level: S.conversationLevel,
+      model: S.model,
+      user_id: userId(),
+      step_goal: activeStepGoal(),
+      weather: callInfo().weather,  // 날씨 퀴즈용 숫자 날씨 (없으면 퀴즈를 건너뛴다)
+      quiz_attempts: S.quizAttempts || 0,
+    };
+    if (S.callOnPhone) await PhoneAI.chat({ ...body, profile: S.callProfile }, turn.controller.signal, onEvent);
+    else await serverChat(body, turn.controller.signal, onEvent);
     if (!isCurrent()) return;
     turn.finished = true;
     if (!phrases.length) throw new Error('AI 답변이 비어 있어요.');
@@ -1266,6 +1365,36 @@ async function handleUserSpeech(text, { silent = false, input = 'voice' } = {}) 
     hideStatus();
     addMessage('assistant', `오류: ${e.message}`);
     showTextInput();
+  }
+}
+
+// PC 서버로 대화 한 턴 (/api/chat/stream). 폰 AI(PhoneAI.chat)와 같은 이벤트를 onEvent로 넘긴다
+async function serverChat(body, signal, onEvent) {
+  const res = await fetch(apiUrl('/api/chat/stream'), {
+    method: 'POST',
+    signal,
+    headers: { ...API_HEADERS, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || '오류가 발생했습니다.');
+  }
+
+  // 한 줄에 JSON 이벤트 하나 (NDJSON)
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let newline;
+    while ((newline = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, newline).trim();
+      buffer = buffer.slice(newline + 1);
+      if (line) onEvent(JSON.parse(line));
+    }
   }
 }
 

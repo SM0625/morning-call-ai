@@ -12,23 +12,28 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
-from pydantic import BaseModel
-
 MAX_ATTEMPTS = 4  # 이만큼 틀리면 정답을 알려 주고 끝낸다 (계속 못 맞혀 통화가 끝나지 않는 일이 없게)
 
 RAIN_CODES = {51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 99}
 SNOW_CODES = {71, 73, 75, 77, 85, 86}
 
 
-class Weather(BaseModel):
-    """화면(static/index.html의 S.weather)이 보내는 날씨"""
-    place: str = ""
+@dataclass
+class Weather:
+    """화면(static/index.html의 S.weather)이 보내는 날씨. 폰에는 pydantic이 없어 dataclass로 둔다
+    (서버는 main.py의 WeatherIn으로 먼저 검사한다)"""
     temp: int
     max: int
     min: int
+    place: str = ""
     rain: int = 0  # 오늘 강수확률(%)
     code: int = 0  # WMO 날씨 코드
     desc: str = ""
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Weather":
+        return cls(temp=round(d["temp"]), max=round(d["max"]), min=round(d["min"]), place=d.get("place") or "",
+                   rain=round(d.get("rain") or 0), code=int(d.get("code") or 0), desc=d.get("desc") or "")
 
 
 @dataclass

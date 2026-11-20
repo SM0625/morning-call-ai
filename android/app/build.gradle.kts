@@ -1,9 +1,12 @@
 import java.net.Inet4Address
 import java.net.NetworkInterface
 
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("com.chaquo.python")
 }
 
 // 앱에 기본으로 넣을 PC 서버 주소. -PserverUrl=http://... 로 직접 지정하거나,
@@ -34,6 +37,8 @@ android {
         versionCode = 1
         versionName = "1.0"
         buildConfigField("String", "DEFAULT_SERVER_URL", "\"$serverUrl\"")
+        // 폰 AI(LiteRT-LM)는 64비트 ARM 폰용 라이브러리만 있다. 에뮬레이터용 x86_64도 넣는다
+        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }
 
     buildFeatures {
@@ -47,7 +52,19 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
+}
+
+kotlin {
+    compilerOptions { jvmTarget.set(JvmTarget.JVM_17) }
+}
+
+chaquopy {
+    defaultConfig { version = "3.12" }
+    // 서버(main.py)와 같은 대화 엔진을 그대로 넣는다
+    sourceSets { getByName("main") { srcDir("../../engine") } }
+}
+
+dependencies {
+    // 폰에서 Gemma 모델을 돌리는 Google 공식 라이브러리
+    implementation("com.google.ai.edge.litertlm:litertlm-android:0.19.1")
 }

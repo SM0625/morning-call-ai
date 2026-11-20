@@ -71,6 +71,12 @@ class MainActivity : Activity() {
         requestNeededPermissions()
         // 통화 후 행동 측정이 끝나면 웹 화면이 결과를 가져가 서버로 보낸다
         WakeMonitor.onReport = { js("window.onNativeWakeReport && window.onNativeWakeReport()") }
+        // 폰 AI: 받아 둔 모델을 바로 올리고, 받기·올리기 진행 상황을 화면에 알린다
+        PhoneAi.onStatus = { status, detail ->
+            js("window.onNativeAiStatus && window.onNativeAiStatus(${JSONObject.quote(status)}, ${JSONObject.quote(detail)})")
+        }
+        PhoneAi.init(this)
+        PhoneEngine.warmUp(this)
         web.loadUrl("file:///android_asset/index.html")
     }
 
@@ -92,6 +98,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         WakeMonitor.onReport = null  // 측정은 앱 Context에서 계속되고, 결과는 저장해 두었다가 다음에 가져간다
+        PhoneAi.onStatus = null
         callSteps.stop()
         tts?.shutdown()
         recognizer?.destroy()
@@ -115,6 +122,8 @@ class MainActivity : Activity() {
 
     // ─── WebView ────────────────────────────────────────────────────────────────
     private fun setupWebView() {
+        // 디버그 빌드에서만 PC의 Chrome(chrome://inspect)이나 측정 스크립트가 화면 코드를 실행·측정할 수 있게 한다
+        WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
         with(web.settings) {
             javaScriptEnabled = true
             domStorageEnabled = true  // localStorage에 이름·일정 저장
@@ -382,5 +391,33 @@ class MainActivity : Activity() {
 
         @JavascriptInterface
         fun stopStepCount() = runOnUiThread { callSteps.stop() }
+
+        // ─── 폰 AI (PhoneAi, PhoneEngine) ───────────────────────────────────────
+        /** none | downloading | downloaded | loading | ready | error. 바뀔 때마다 window.onNativeAiStatus(상태, 내용) */
+        @JavascriptInterface
+        fun aiStatus(): String = PhoneAi.status
+
+        @JavascriptInterface
+        fun aiDetail(): String = PhoneAi.detail
+
+        @JavascriptInterface
+        fun aiModelName(): String = PhoneAi.MODEL_NAME
+
+        /** 모델(약 2.6GB) 받기. 끊기면 다시 부를 때 이어서 받는다 */
+        @JavascriptInterface
+        fun aiDownload() = PhoneAi.download(this@MainActivity)
+
+        /**
+         * kind: "initial" | "chat", payload: 서버 API와 같은 요청 JSON (+ profile).
+         * 결과는 window.onNativeAi(id, 이벤트 JSON)으로 하나씩 온다
+         */
+        @JavascriptInterface
+        fun aiRequest(id: String, kind: String, payload: String) =
+            PhoneEngine.request(this@MainActivity, id, kind, payload) { reqId, event ->
+                js("window.onNativeAi && window.onNativeAi(${JSONObject.quote(reqId)}, ${JSONObject.quote(event)})")
+            }
+
+        @JavascriptInterface
+        fun aiCancel(id: String) = PhoneEngine.cancel(id)
     }
 }
