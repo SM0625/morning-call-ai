@@ -401,11 +401,21 @@ class MainActivity : Activity() {
         fun aiDetail(): String = PhoneAi.detail
 
         @JavascriptInterface
-        fun aiModelName(): String = PhoneAi.MODEL_NAME
+        fun aiModelName(): String = PhoneAi.modelName
 
-        /** 모델(약 2.6GB) 받기. 끊기면 다시 부를 때 이어서 받는다 */
+        /** 모델(약 2.6GB) 받기·새 모델로 바꾸기. 끊기면 다시 부를 때 이어서 받는다 */
         @JavascriptInterface
         fun aiDownload() = PhoneAi.download(this@MainActivity)
+
+        /** 화면 표시용: {"sizeMb", "update"(새 모델 있음), "progress"(새 모델 받는 중 %, 101=확인 중, -1=아님), "updateError", "metered"(모바일 데이터)} */
+        @JavascriptInterface
+        fun aiInfo(): String = JSONObject()
+            .put("sizeMb", PhoneAi.downloadSizeMb)
+            .put("update", PhoneAi.updateAvailable)
+            .put("progress", PhoneAi.updateProgress)
+            .put("updateError", PhoneAi.updateError)
+            .put("metered", (getSystemService(CONNECTIVITY_SERVICE) as android.net.ConnectivityManager).isActiveNetworkMetered)
+            .toString()
 
         /**
          * kind: "initial" | "chat", payload: 서버 API와 같은 요청 JSON (+ profile).

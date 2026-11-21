@@ -13,7 +13,9 @@ import com.google.ai.edge.litertlm.MessageCallback
 import com.google.ai.edge.litertlm.SamplerConfig
 import com.google.ai.edge.litertlm.ThinkingConfig
 import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
+import java.security.MessageDigest
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
@@ -23,14 +25,22 @@ import java.util.concurrent.TimeUnit
 
 /**
  * 폰 안에서 Gemma 4 E2B를 돌린다 (Google LiteRT-LM). PC 서버·와이파이가 꺼져 있어도 깨울 수 있게 하려는 것.
- * 모델(약 2.6GB)은 처음 한 번 Hugging Face에서 받아 앱 저장소에 둔다.
+ * 모델(약 2.6GB)은 처음 한 번 Hugging Face에서 받아 앱 저장소에 둔다. 받는 모델은 깨우기 대화로 미세조정한 것이다.
  * 대화 엔진(engine/dialog.py)이 [start]로 토큰 스트림을 받아 쓴다 (engine/phone.py).
+ *
+ * 서비스용:
+ * - 어떤 모델을 받을지는 저장소의 manifest.json이 정한다 {"version", "file", "size", "sha256"}.
+ *   새 모델을 올리고 version만 올리면, 앱을 다시 배포하지 않아도 "새 모델 받기"가 뜬다.
+ * - 다 받으면 크기와 SHA-256을 확인한 뒤에만 쓴다 (깨진 파일로 알람이 실패하지 않게).
+ * - 새 모델로 바꾸면 예전 모델 파일은 지워 저장 공간을 돌려준다.
  */
 object PhoneAi {
-    const val MODEL_NAME = "gemma-4-E2B (폰)"
-    // Apache 2.0 라이선스라 로그인·동의 없이 받을 수 있다
-    private const val MODEL_URL =
-        "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm"
+    const val MODEL_NAME = "gemma-4-E2B 미세조정 (폰)"
+    // 미세조정 모델 저장소 (tools/finetune/kaggle_convert_ple.ipynb로 만든 .litertlm + manifest.json)
+    private const val REPO = "tkdals24/morning-gemma-litertlm"
+    private const val MANIFEST_URL = "https://huggingface.co/$REPO/resolve/main/manifest.json"
+    private fun fileUrl(file: String) = "https://huggingface.co/$REPO/resolve/main/$file"
+    private const val PREFS = "phone_ai"
     // 서버(main.py GENERATION_OPTIONS)와 같은 생성 설정
     private const val TEMPERATURE = 0.7
     private const val MAX_OUTPUT_TOKENS = 120
@@ -39,7 +49,7 @@ object PhoneAi {
     // 앞 대답의 남은 생성(최대 120토큰, 약 2초)을 기다리는 시간. 보통은 AI가 말하는 동안 이미 끝나 있다
     private const val PREVIOUS_WAIT_MS = 3_000L
 
-    /** none(모델 없음) | downloading | downloaded(받았지만 아직 안 올림) | loading | ready | error */
+    /** none(모델 없음) | downloading | verifying(받은 파일 확인 중) | downloaded(받았지만 아직 안 올림) | loading | ready | error */
     @Volatile var status = "none"
         private set
     /** 받는 중이면 진행률(%), 오류면 내용, 준비되면 쓰는 장치(GPU/CPU) */
@@ -58,59 +68,169 @@ object PhoneAi {
         onStatus?.invoke(s, d)
     }
 
-    private fun modelFile(ctx: Context) = File(ctx.filesDir, "models/gemma-4-E2B-it.litertlm")
+    private fun modelsDir(ctx: Context) = File(ctx.filesDir, "models")
+    private fun prefs(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    /** 받아서 확인까지 끝난 모델 파일 (없으면 null). 예전 버전 앱이 받은 공식 모델도 그대로 쓴다 */
+    private fun installedModel(ctx: Context): File? {
+        prefs(ctx).getString("file", null)?.let { File(modelsDir(ctx), it) }?.takeIf { it.exists() }?.let { return it }
+        return File(modelsDir(ctx), "gemma-4-E2B-it.litertlm").takeIf { it.exists() }
+    }
+    private fun installedVersion(ctx: Context) = prefs(ctx).getInt("version", 0)
+
+    /**
+     * 개발용: PC에서 adb로 앱 폴더에 넣으면 받은 모델 대신 쓴다 (새로 변환한 모델을 올리기 전에 시험할 때)
+     * adb push morning-gemma.litertlm /sdcard/Android/data/com.morningcall.app/files/
+     */
+    private fun devModel(ctx: Context) =
+        ctx.getExternalFilesDir(null)?.let { File(it, "morning-gemma.litertlm") }?.takeIf { it.exists() }
+
+    /** 통화 기록에 남기는 모델 이름 (어느 모델·버전으로 통화했는지 구분) */
+    var modelName = MODEL_NAME
+        private set
+
+    // ─── 저장소의 최신 모델 정보 (manifest.json) ─────────────────────────────────
+    data class Manifest(val version: Int, val file: String, val size: Long, val sha256: String)
+    @Volatile private var latest: Manifest? = null
+
+    /** 받을 크기(MB). 화면의 "받기" 버튼 옆에 보여 준다 (모르면 0) */
+    val downloadSizeMb get() = (latest?.size ?: 0L) / 1_000_000
+    /** 받아 둔 모델보다 새 버전이 저장소에 있으면 true */
+    @Volatile var updateAvailable = false
+        private set
+    /** 새 모델 받기에 실패했을 때 이유 (지금 모델로 계속 쓴다) */
+    @Volatile var updateError = ""
+        private set
+    /** 새 모델을 받는 중이면 0~100(%), 확인 중이면 101, 아니면 -1 */
+    @Volatile var updateProgress = -1
+        private set
+
+    private fun fetchManifest(): Manifest {
+        val conn = (URL(MANIFEST_URL).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 10_000
+            readTimeout = 10_000
+        }
+        if (conn.responseCode != HttpURLConnection.HTTP_OK) error("모델 정보를 받지 못했어요 (서버 응답 ${conn.responseCode})")
+        val j = JSONObject(conn.inputStream.bufferedReader().readText())
+        return Manifest(j.getInt("version"), j.getString("file"), j.getLong("size"), j.getString("sha256").lowercase())
+    }
+
+    /** 앱을 열 때 뒤에서 확인한다. 인터넷이 없으면 조용히 넘어간다 (받아 둔 모델로 계속 동작) */
+    private fun checkUpdate(ctx: Context) = Thread {
+        runCatching { fetchManifest() }.onSuccess { m ->
+            latest = m
+            updateAvailable = installedModel(ctx) != null && m.version > installedVersion(ctx)
+            setStatus(status, detail)  // 화면에 "새 모델" 표시를 다시 그리게 한다
+        }
+    }.start()
 
     /** 앱을 열 때: 받아 둔 모델이 있으면 바로 메모리에 올린다 (알람이 울릴 때 기다리지 않도록) */
     fun init(ctx: Context) {
-        if (status == "none" && modelFile(ctx).exists()) setStatus("downloaded")
+        if (status == "none" && (devModel(ctx) != null || installedModel(ctx) != null)) setStatus("downloaded")
         load(ctx)
+        checkUpdate(ctx)
     }
 
     // ─── 모델 받기 ───────────────────────────────────────────────────────────────
-    /** 이어 받기를 지원한다. 끊겨도 다시 누르면 받은 곳부터 이어서 받는다 */
+    /**
+     * 처음 받기와 새 모델 받기 모두 이것을 쓴다. 이어 받기를 지원한다(끊겨도 다시 누르면 받은 곳부터).
+     * 새 모델을 받는 동안에도 지금 모델로 계속 통화할 수 있게, 다 받고 확인한 뒤에만 바꾼다.
+     */
+    @Volatile private var downloading = false
     fun download(ctx: Context) {
-        if (status != "none" && status != "error") return
-        val target = modelFile(ctx)
-        if (target.exists()) { setStatus("downloaded"); load(ctx); return }
-        setStatus("downloading", "0")
+        if (downloading || status == "loading") return
+        if (installedModel(ctx) != null && !updateAvailable && status != "error") return
+        downloading = true
+        updateError = ""
+        // 이미 모델이 있으면(새 모델 받기) 상태는 그대로 두고 진행률만 따로 알린다. 받는 동안에도 지금 모델로 통화한다
+        val wasReady = status == "ready"
+        fun progress(p: Int) {
+            if (wasReady) { updateProgress = p; setStatus(status, detail) }
+            else if (p > 100) setStatus("verifying") else setStatus("downloading", "$p")
+        }
+        progress(0)
         Thread {
             try {
-                target.parentFile?.mkdirs()
-                val part = File(target.path + ".part")
+                val m = latest ?: fetchManifest().also { latest = it }
+                val dir = modelsDir(ctx).apply { mkdirs() }
+                val target = File(dir, m.file)
+                val part = File(dir, "${m.file}.v${m.version}.part")
+                // 다른 버전을 받다 만 조각은 지운다
+                dir.listFiles { f -> f.name.endsWith(".part") && f != part }?.forEach { it.delete() }
                 val done = if (part.exists()) part.length() else 0L
-                val conn = (URL(MODEL_URL).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 15_000
-                    readTimeout = 30_000
-                    if (done > 0) setRequestProperty("Range", "bytes=$done-")
-                }
-                val resumed = conn.responseCode == HttpURLConnection.HTTP_PARTIAL
-                if (!resumed && conn.responseCode != HttpURLConnection.HTTP_OK) error("서버 응답 ${conn.responseCode}")
-                val start = if (resumed) done else 0L
-                val total = start + conn.contentLengthLong
-                if (ctx.filesDir.usableSpace < total - start + 200_000_000L) error("저장 공간이 부족해요 (약 2.6GB 필요)")
-                var received = start
-                var lastPercent = -1L
-                conn.inputStream.use { input ->
-                    FileOutputStream(part, resumed).use { output ->
-                        val buffer = ByteArray(1 shl 16)
-                        while (true) {
-                            val n = input.read(buffer)
-                            if (n < 0) break
-                            output.write(buffer, 0, n)
-                            received += n
-                            val percent = received * 100 / total
-                            if (percent != lastPercent) { lastPercent = percent; setStatus("downloading", "$percent") }
+                if (done < m.size) {
+                    if (ctx.filesDir.usableSpace < m.size - done + 200_000_000L)
+                        error("저장 공간이 부족해요 (${m.size / 1_000_000_000.0}GB 필요)".replace(Regex("(\\.\\d)\\d+"), "$1"))
+                    val conn = (URL(fileUrl(m.file)).openConnection() as HttpURLConnection).apply {
+                        connectTimeout = 15_000
+                        readTimeout = 30_000
+                        if (done > 0) setRequestProperty("Range", "bytes=$done-")
+                    }
+                    val resumed = conn.responseCode == HttpURLConnection.HTTP_PARTIAL
+                    if (!resumed && conn.responseCode != HttpURLConnection.HTTP_OK) error("서버 응답 ${conn.responseCode}")
+                    var received = if (resumed) done else 0L
+                    var lastPercent = -1L
+                    conn.inputStream.use { input ->
+                        FileOutputStream(part, resumed).use { output ->
+                            val buffer = ByteArray(1 shl 16)
+                            while (true) {
+                                val n = input.read(buffer)
+                                if (n < 0) break
+                                output.write(buffer, 0, n)
+                                received += n
+                                val percent = received * 100 / m.size
+                                if (percent != lastPercent) { lastPercent = percent; progress(percent.toInt()) }
+                            }
                         }
                     }
                 }
-                if (received < total) error("받다가 끊겼어요. 다시 누르면 이어서 받아요")
+                if (part.length() != m.size) error("받다가 끊겼어요. 다시 누르면 이어서 받아요")
+                progress(101)
+                if (sha256(part) != m.sha256) {
+                    part.delete()
+                    error("받은 파일이 손상됐어요. 다시 받아 주세요")
+                }
+                if (target.exists() && target != installedModel(ctx)) target.delete()
+                // 지금 쓰는 모델과 이름이 같으면 엔진을 닫고 바꾼다
+                if (target.exists()) closeEngine()
                 if (!part.renameTo(target)) error("파일을 저장하지 못했어요")
+                val old = installedModel(ctx)
+                prefs(ctx).edit().putString("file", m.file).putInt("version", m.version).apply()
+                updateAvailable = false
+                // 예전 모델(공식 모델이나 이전 버전)은 지워 저장 공간을 돌려준다
+                if (old != null && old != target) { closeEngine(); old.delete() }
                 setStatus("downloaded")
                 load(ctx)
             } catch (e: Exception) {
-                setStatus("error", e.message ?: "모델을 받지 못했어요")
+                // 새 모델 받기에 실패해도 지금 모델이 있으면 계속 쓴다
+                if (wasReady && engine != null) { updateError = e.message ?: "새 모델을 받지 못했어요"; setStatus("ready", detail) }
+                else setStatus("error", e.message ?: "모델을 받지 못했어요")
+            } finally {
+                downloading = false
+                updateProgress = -1
             }
         }.start()
+    }
+
+    private fun sha256(file: File): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(1 shl 20)
+            while (true) {
+                val n = input.read(buffer)
+                if (n < 0) break
+                md.update(buffer, 0, n)
+            }
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private fun closeEngine() = synchronized(this) {
+        current?.cancel()
+        conversation?.let { runCatching { it.close() } }
+        conversation = null
+        engine?.let { runCatching { it.close() } }
+        engine = null
     }
 
     // ─── 메모리에 올리기 ─────────────────────────────────────────────────────────
@@ -118,14 +238,24 @@ object PhoneAi {
         if (status != "downloaded") return
         setStatus("loading")
         loader.execute {
-            val path = modelFile(ctx).absolutePath
+            val dev = devModel(ctx)
+            val installed = installedModel(ctx)
+            val file = dev ?: installed ?: run { setStatus("none"); return@execute }
+            val path = file.absolutePath
+            val version = installedVersion(ctx)
+            modelName = when {
+                dev != null -> "$MODEL_NAME · adb"
+                version > 0 -> "$MODEL_NAME v$version"
+                else -> "gemma-4-E2B 공식 (폰)"
+            }
+            val custom = dev != null || version > 0
             // GPU가 빠르다(공식 수치: 첫 토큰 0.3초, CPU 1.8초). GPU를 못 쓰는 폰은 CPU로
             for ((name, backend) in listOf("GPU" to Backend.GPU(), "CPU" to Backend.CPU())) {
                 try {
                     val e = Engine(EngineConfig(modelPath = path, backend = backend, cacheDir = ctx.cacheDir.path))
                     e.initialize()
                     engine = e
-                    setStatus("ready", name)
+                    setStatus("ready", if (custom) "$name · 미세조정 모델" else "$name · 공식 모델")
                     return@execute
                 } catch (e: Throwable) {
                     detail = e.message ?: ""

@@ -3,6 +3,8 @@
 
     <!-- PC 서버와 통신 -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 모바일 데이터인지 확인 (모델 2.6GB를 받기 전에 알려 주려고) -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- 음성 인식 -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- 날씨 (거친 위치면 충분) -->

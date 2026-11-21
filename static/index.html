@@ -420,19 +420,40 @@ const PhoneAI = {
   },
 
   // 설정 화면의 상태 표시
+  info() {
+    try { return JSON.parse(NATIVE.aiInfo ? NATIVE.aiInfo() : '{}'); } catch { return {}; }
+  },
   render(status = this.status(), detail = NATIVE.aiDetail()) {
-    const text = {
-      none: 'PC 서버·와이파이 없이도 깨우려면 모델(2.6GB)을 받아 주세요. 와이파이에서 받는 걸 권해요.',
-      downloading: `받는 중… ${detail}%`,
+    const info = this.info();
+    const size = info.sizeMb ? `${(info.sizeMb / 1000).toFixed(1)}GB` : '약 2.6GB';
+    const metered = !!info.metered;
+    const updating = info.progress >= 0;
+    let text = {
+      none: metered
+        ? `⚠️ 지금 모바일 데이터예요. 모델(${size})은 와이파이에서 받는 걸 권해요.`
+        : `PC 서버·인터넷 없이도 깨우려면 모델(${size})을 받아 주세요.`,
+      downloading: `받는 중… ${detail}% · 끊겨도 다시 누르면 이어서 받아요`,
+      verifying: '받은 파일이 온전한지 확인하는 중…',
       downloaded: '준비 중…',
       loading: '모델을 올리는 중… (10초쯤 걸려요)',
       ready: `✅ 폰에서 대화해요 (${detail}). PC 서버가 꺼져 있어도 돼요.`,
       error: `⚠️ ${detail} · 지금은 PC 서버를 써요.`,
     }[status] || status;
+    if (status === 'ready' && updating) {
+      text += info.progress > 100 ? ' · 새 모델 확인 중…' : ` · 새 모델 받는 중 ${info.progress}%`;
+    } else if (status === 'ready' && info.update) {
+      text += ` · 🆕 새 모델이 있어요(${size}).`;
+    }
+    if (status === 'ready' && info.updateError) text += ` · ⚠️ ${info.updateError}`;
+    const showBtn = ['none', 'error'].includes(status) || (status === 'ready' && info.update && !updating);
+    const btn = document.getElementById('phone-ai-btn');
+    btn.classList.toggle('hidden', !showBtn);
+    btn.textContent = status === 'ready' ? (metered ? '모바일 데이터로 새 모델 받기' : '새 모델 받기')
+      : status === 'error' ? '다시 받기' : (metered ? '모바일 데이터로 받기' : `받기 (${size})`);
     document.getElementById('phone-ai-status').textContent = text;
-    document.getElementById('phone-ai-btn').classList.toggle('hidden', !['none', 'error'].includes(status));
-    document.getElementById('phone-ai-bar').classList.toggle('hidden', status !== 'downloading');
-    document.getElementById('phone-ai-fill').style.width = `${status === 'downloading' ? detail : 0}%`;
+    const pct = status === 'downloading' ? Number(detail) : (updating && info.progress <= 100 ? info.progress : null);
+    document.getElementById('phone-ai-bar').classList.toggle('hidden', pct === null);
+    document.getElementById('phone-ai-fill').style.width = `${pct ?? 0}%`;
   },
 };
 window.onNativeAi = (id, json) => {
