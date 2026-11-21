@@ -47,7 +47,11 @@ STATE_GUIDES = {
     "awake": "깼다는 말을 반가워하기.",
     "waking": "일어나려는 걸 반가워하되, 정말 일어났는지 행동 하나를 시켜 확인하기.",
     "up": "말한 행동을 구체적으로 짚어서 칭찬하기.",
-    "sleepy": "졸린 이유나 핑계의 내용을 구체적으로 받아치기 (더 자라는 허락은 금지).",
+    # 쓴 뒤에 검사(EXCUSE_OK_RE)로 막으면 이미 말한 앞부분 뒤에 대체 문장이 붙어 어색해지므로("재택은 그러니까
+    # 민수님, 이불부터…") 애초에 덜 쓰게 한다. 금지 표현을 예시 문장('재택은 괜찮아요')으로 적으면 gemma3:4b가 오히려
+    # 따라 해서("괜찮아요, 5분만 더 실컷 누워도 돼요") 원칙만 적는다
+    "sleepy": "졸린 이유나 핑계의 내용을 구체적으로 받아치기. 더 자라는 허락, 핑계를 받아 주는 말, "
+              "눈을 감으라는 말은 금지.",
     # 다 깼다고 한 뒤(3단계)에 끊자고 하면 마무리로 넘어가므로, 이 지시는 아직 덜 깼을 때만 쓰인다
     "hangup": "아직 다 일어난 걸 확인하지 못해 못 끊는다고 웃으며 버티고, 침대에서 나오면 끊겠다고 약속하기.",
     "silent": "대답이 없어 다시 잠든 것 같으니 이름을 부르며 아직 전화 안 끊었다고 하기.",
@@ -311,6 +315,19 @@ SOFT_ISSUES = {"깨우는 중이라는 표현 없음", "너무 김"}
 PRESENCE_RE = re.compile(r"깨우|깨워|깨울|일어나|일어날|일어나요|눈.{0,3}떠|눈.{0,3}뜨|전화|모닝콜|알람|끊|목소리|옆에|함께|같이|"
                          r"이불|하품|하나\s?둘|수화기|창문")
 GIVEUP_RE = re.compile(r"더\s?주무|푹\s?주무|푹\s?자|잘\s?자요|더\s?자도|더\s?쉬|자도\s?(돼|괜찮)|쉬세요|그래도\s?괜찮|천천히\s?주무|누워\s?계세요|누워\s?있어도|더\s?누우|더\s?누워|더\s?계시|더\s?있어도|더\s?계셔도|더\s?잘\s?계|좀\s?더\s?주무|더\s?자요")
+# 위 규칙을 빠져나간 넘어가는 말 (tools/eval_excuses.py로 핑계 10가지를 보내 모음):
+# 다시 자라는 말("조금만 더 눈을 감고 계세요"), 잠깐은 괜찮다는 말("잠깐이라도 괜찮아요"),
+# 핑계 허락("재택은 괜찮지만", "휴강이라니, 정말 좋겠네요"). "재택은 안 돼요"처럼 사이에 안·못·아니가 있으면 깨우는 말이라 제외
+EXCUSE_OK_RE = re.compile(
+    r"눈을?\s?(좀\s?)?(더\s?)?감(고\s?(계세요|있어도|계셔도|있으세요|쉬)|으세요|아도|으셔도|으시면)|눈\s?붙(이|였)|"
+    r"(쉬셔도|쉬어도)\s?(돼|괜찮)|"
+    r"잠깐(이라도|만)?\s?(더\s?)?(괜찮아요|자도|쉬어도|누워\s?있어도|눈\s?감아도)|누워도\s?(돼|괜찮)|"
+    r"누우셔도\s?(돼|괜찮)|더\s?자야(죠|해요|겠)|(졸리|피곤하)시면\s?괜찮|"
+    r"(재택|휴강|결석|지각|늦어도|늦게|수업|출근|회사|학교|알바)(?:(?!안|못|아니)[^.!?]){0,10}"
+    r"(괜찮아요|괜찮지만|괜찮죠|괜찮습니다|좋겠네요|좋죠|좋아요|돼요|되죠|됩니다)")
+# "늦어도 괜찮지 않아?"처럼 허락을 구했는데 "괜찮아요, 민수님."으로 시작하는 대답 (대답만 봐서는 알 수 없어 질문과 같이 본다)
+PERMISSION_ASK_RE = re.compile(r"괜찮지|괜찮을까|괜찮겠|해도\s?(돼|되|괜찮)|안\s?되나|안\s?될까|되지\s?않")
+PERMISSION_YES_RE = re.compile(r"\s*(네|응|그럼요|물론|괜찮아요|괜찮습니다|좋아요|돼요|됩니다)[\s,.!~]")
 # 소형 모델이 가끔 섞는 키릴·태국·아랍·그리스 문자 ("열 пятнадцать 분"). 지우면 말이 깨지므로 문제로 잡아 다시 생성한다
 FOREIGN_RE = re.compile(r"[\u0370-\u03FF\u0400-\u04FF\u0600-\u06FF\u0E00-\u0E7F]")
 # "지금 열한 시 정분입니다"처럼 묻지도 않은 지금 시각을 지어내는 말. 일정의 시각("10시 발표")은 잡지 않도록
@@ -356,7 +373,8 @@ def reply_issues(reply: str, user_msg: str, stage: int, first: bool, previous: l
     issues = []
     if repeats_previous(reply, previous):
         issues.append("이전 답변 반복")
-    if GIVEUP_RE.search(reply):
+    if GIVEUP_RE.search(reply) or EXCUSE_OK_RE.search(reply) or \
+            (PERMISSION_ASK_RE.search(user_msg) and PERMISSION_YES_RE.match(reply)):
         issues.append("포기 발언")
     if not reply or len(reply) < 8:
         issues.append("너무 짧음")
@@ -511,6 +529,7 @@ def stream_reply(
     attempt_messages = messages
     for attempt in range(MAX_RETRIES + 1):
         retry_feedback = None
+        stopped = False  # 문제가 있어 말을 중간에 멈췄는지
         tokens = iter(stream([{"role": "system", "content": system}] + attempt_messages))
         phrases = split_phrases(tokens)
         skipping = False  # 반복이라 건너뛰기로 한 문장의 나머지 구절을 버리는 중
@@ -541,6 +560,7 @@ def stream_reply(
                         # 아직 아무 말도 안 했으면 문제를 알려 주고 다시 생성
                         retry_feedback = f"\n(주의: 방금 시작한 \"{phrase}\"은(는) {', '.join(issues)} 문제가 " \
                                          "있습니다. 다른 표현으로 새로 말하세요.)"
+                    stopped = True
                     break  # 포기 발언·반말·외국어 등은 거기서 말을 멈춘다
                 if issues and not sentence_so_far:
                     # 앞에서 한 말을 되풀이하거나 시각을 지어내거나 미리 끊겠다는 문장은 건너뛰고 다음 문장으로 넘어간다
@@ -567,8 +587,10 @@ def stream_reply(
     if stage == LAST_STAGE:
         if not CLOSING_RE.search(" ".join(spoken)):
             yield CLOSING_LINE if spoken else FALLBACK_LINES["end"]
-    elif sentence_so_far or hangul_count(" ".join(spoken)) < 6:
-        # 문장 중간에서 멈췄거나 "에이," 정도만 말했으면, 끊긴 채로 두지 않고 깨우는 말로 마무리한다
+    elif sentence_so_far or hangul_count(" ".join(spoken)) < 6 or \
+            (stopped and not PRESENCE_RE.search(" ".join(spoken))):
+        # 문장 중간에서 멈췄거나 "에이," 정도만 말했으면, 끊긴 채로 두지 않고 깨우는 말로 마무리한다.
+        # 문제가 있어 멈췄는데 앞 문장이 공감뿐이면("휴강일 수도 있겠네요?") 깨우는 말 없이 끝나지 않게 한다
         yield random.choice(FALLBACK_LINES["wake"]).format(name=user_name or "")
 
 
