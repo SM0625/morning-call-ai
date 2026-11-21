@@ -43,7 +43,7 @@ AI는 클라우드가 아니라 내 기기에서 직접 돌리기 때문에 API 
 | `android/` | 안드로이드 앱 (알람, 벨소리, 음성 합성·인식, 폰 AI) |
 | `tools/eval_models.py` | 같은 시나리오로 모델별 대화 품질을 비교합니다. 결과는 `tools/eval-결과.md` |
 | `tools/eval_excuses.py` | 핑계 10가지에 AI가 넘어가는지 모델별로 잽니다. 결과는 `tools/eval-핑계.md` |
-| `tools/finetune/` | 폰 모델 미세조정: 학습 데이터 만들기(`make_wake_data.py`), Colab 학습 노트북(`gemma4_wake_lora.ipynb`), Kaggle 변환 노트북(`kaggle_convert_ple.ipynb`) |
+| `tools/finetune/` | 폰 모델 미세조정: 학습 데이터 만들기(`make_wake_data.py`), Colab 학습 노트북(`gemma4_wake_lora.ipynb`), Kaggle 변환 노트북(`kaggle_convert_ple.ipynb`), v2 선호 학습(`make_dpo_data.py`, `kaggle_train_v2.ipynb`, `eval_stream.py`) |
 | `requirements.txt` | Python 패키지 목록 |
 | `run.bat` | Windows용 실행 스크립트 (패키지 설치 + 서버 실행) |
 | `start-public.bat` | 서버를 켜고 ngrok 고정 주소로 인터넷에 공개하는 스크립트. 사용법은 `서버-실행법.md` |
@@ -170,7 +170,17 @@ pip install -r requirements.txt
 4. **배포** (Hugging Face): [`tkdals24/morning-gemma-litertlm`](https://huggingface.co/tkdals24/morning-gemma-litertlm)에 파일을 올리고 `manifest.json`을 고칩니다. `version`은 1 올리고, `size`와 `sha256`은 새 파일 값으로 바꿉니다.
    - 앱은 설정 화면의 **받기** 버튼 하나로 모델을 받습니다. 받은 뒤 크기와 SHA-256을 확인하고, 끊기면 이어서 받습니다. 모바일 데이터에서는 경고를 보여 줍니다.
    - `version`이 올라가면 앱을 다시 배포하지 않아도 이미 받은 사용자에게 "🆕 새 모델 받기"가 뜹니다. 받는 동안에도 지금 모델로 통화하고, 다 받으면 예전 파일을 지웁니다.
-5. **올리기 전에 시험하기** (개발용): `adb push`로 앱 폴더에 넣으면 받은 모델보다 먼저 씁니다. 지우면 받은 모델로 돌아갑니다.
+5. **더 좋게 만들기 (v2: 선호 학습)**: v1을 만든 뒤 아래 순서로 v2를 만들었다. 같은 순서를 반복해 v3, v4로 조금씩 개선한다.
+   - `python tools/finetune/make_dpo_data.py --calls 200`: 한 턴마다 대답 후보를 여러 개 만들어, 대화 엔진 검사를 통과한 대답(chosen)과 걸린 대답(rejected)의 짝을 모은다. 실수를 더 자주 하는 gemma3:4b의 대답도 rejected로 모은다. `--public-other tools/finetune/public_other.txt`를 주면, 공개 데이터([empathetic_dialogues_ko](https://huggingface.co/datasets/Smoked-Salmon-s/empathetic_dialogues_ko), Apache-2.0)의 일상 이야기를 통화 중 '딴 얘기'로 넣는다.
+   - `tools/finetune/kaggle_train_v2.ipynb` (Kaggle GPU 한 세션, 약 4시간): SFT → DPO → v1과 같은 시험(`eval_stream.py`) → 폰용 변환.
+   - **배포 기준**: 새 버전이 이전 버전보다 시험 점수가 좋을 때만 `manifest.json`의 `version`을 올린다. 결과는 `tools/eval-v1-v2.md`(Kaggle), `tools/eval-폰-v1-v2.md`(폰)에 있다.
+
+   | 버전 | 깨움 표현 없음 | 대체 문장 | 심각·핑계 넘어감 |
+   |---|---|---|---|
+   | v1 | 10/64 | 6/64 | 0 |
+   | v2 | 0/64 | 4/64 | 0 |
+
+6. **올리기 전에 시험하기** (개발용): `adb push`로 앱 폴더에 넣으면 받은 모델보다 먼저 씁니다. 지우면 받은 모델로 돌아갑니다.
 
    ```powershell
    adb push morning-gemma.litertlm /sdcard/Android/data/com.morningcall.app/files/
