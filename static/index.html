@@ -2,351 +2,429 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
   <title>AI 모닝콜</title>
   <!-- 앱을 열 때마다 인터넷에서 받지 않도록 Tailwind는 미리 만든 CSS를, 글꼴은 기기에 있는 것을 쓴다.
        클래스를 새로 쓰면 tailwind.css를 다시 만들어야 한다 (README의 "화면 스타일을 고쳤을 때") -->
   <link rel="stylesheet" href="tailwind.css">
   <style>
-    * { font-family: system-ui, -apple-system, 'Noto Sans KR', 'Malgun Gothic', sans-serif; }
-
-    @keyframes pulse-ring {
-      0% { transform: scale(1); opacity: 0.8; }
-      100% { transform: scale(2.2); opacity: 0; }
+    /* ── 디자인 기준 (근거는 프롬프트-기록.md #38) ─────────────────────────────
+       · 폰의 라이트/다크 설정을 그대로 따른다 (NN/g: 사용자 1/3씩 라이트·다크·둘 다)
+       · 다크는 순검정 대신 짙은 회색 (Material 다크 테마 권장: 번짐·눈부심이 적다)
+       · 모든 글자/배경 조합 대비 4.5:1 이상 (WCAG AA), 누르는 곳은 48px 이상 (Material 48dp, Apple 44pt)
+       · 본문 16px, 중요한 숫자는 크게. 막 깬 사람은 판단이 느리므로(수면 관성) 화면마다 할 일 하나만 크게 */
+    :root {
+      --bg: #f5f6fa; --surface: #ffffff; --surface-2: #eef0f5; --border: #e1e4ec;
+      --text: #151821; --text-2: #4a5261; --text-3: #5f6776;
+      --primary: #4f46e5; --primary-press: #4338ca; --primary-text: #4338ca; --primary-soft: #eceefe;
+      --ok: #15803d; --ok-press: #166534; --danger: #c62828; --danger-press: #a61f1f;
+      --warn-text: #92400e; --warn-soft: #fef3c7;
+      --sun-1: #f59e0b; --sun-2: #ea580c;
+      --bubble-ai: #ffffff; --bubble-me: #4f46e5; --bubble-me-text: #ffffff;
+      --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .08);
     }
-    @keyframes bell {
-      0%,100% { transform: rotate(-12deg); }
-      50% { transform: rotate(12deg); }
-    }
-    @keyframes float {
-      0%,100% { transform: translateY(0px); }
-      50% { transform: translateY(-8px); }
-    }
-    @keyframes wave {
-      0%,100% { transform: scaleY(0.4); }
-      50% { transform: scaleY(1); }
-    }
-    @keyframes glow {
-      0%,100% { box-shadow: 0 0 20px #6366f1; }
-      50% { box-shadow: 0 0 40px #818cf8, 0 0 60px #6366f1; }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f1115; --surface: #181b22; --surface-2: #232733; --border: #2c313d;
+        --text: #eceef3; --text-2: #b3b9c5; --text-3: #9aa1ae;
+        --primary: #4f46e5; --primary-press: #5b54ea; --primary-text: #a5b4fc; --primary-soft: #262a4a;
+        --warn-text: #fbbf24; --warn-soft: #2d2410;
+        --bubble-ai: #232733; --bubble-me: #3f3ab8; --bubble-me-text: #ffffff;
+        --shadow: none;
+      }
     }
 
-    .ring-anim { animation: bell 0.35s ease-in-out infinite; }
-    .float-anim { animation: float 3s ease-in-out infinite; }
-    .glow-anim { animation: glow 2s ease-in-out infinite; }
-
-    .pulse-ring-1 { animation: pulse-ring 1.8s ease-out infinite; }
-    .pulse-ring-2 { animation: pulse-ring 1.8s ease-out 0.6s infinite; }
-    .pulse-ring-3 { animation: pulse-ring 1.8s ease-out 1.2s infinite; }
-
-    .wave-bar { animation: wave 1s ease-in-out infinite; }
-    .wave-bar:nth-child(2) { animation-delay: 0.15s; }
-    .wave-bar:nth-child(3) { animation-delay: 0.3s; }
-    .wave-bar:nth-child(4) { animation-delay: 0.45s; }
-    .wave-bar:nth-child(5) { animation-delay: 0.6s; }
-
+    * { font-family: system-ui, -apple-system, 'Noto Sans KR', 'Malgun Gothic', sans-serif; -webkit-tap-highlight-color: transparent; }
+    html, body { background: var(--bg); color: var(--text); }
+    body { font-size: 16px; line-height: 1.5; min-height: 100vh; }
     .hidden { display: none !important; }
-    .chat-scroll { scrollbar-width: thin; scrollbar-color: #4f46e5 #1e1b4b; }
-    .chat-scroll::-webkit-scrollbar { width: 4px; }
-    .chat-scroll::-webkit-scrollbar-thumb { background: #4f46e5; border-radius: 4px; }
+    .num { font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+    .ic { width: 22px; height: 22px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .ic-sm { width: 18px; height: 18px; }
+    .ic-lg { width: 28px; height: 28px; }
 
-    input[type="time"]::-webkit-calendar-picker-indicator { filter: invert(1); }
+    .t2 { color: var(--text-2); }
+    .t3 { color: var(--text-3); }
+    .tp { color: var(--primary-text); }
+
+    /* 카드·입력 */
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; box-shadow: var(--shadow); }
+    .label { display: block; font-size: 14px; font-weight: 600; color: var(--text-2); margin-bottom: 8px; }
+    .label .opt { font-weight: 400; color: var(--text-3); }
+    .help { font-size: 13px; color: var(--text-3); margin-top: 6px; line-height: 1.5; }
+    .field { width: 100%; min-height: 52px; background: var(--surface-2); color: var(--text); border: 1.5px solid transparent;
+             border-radius: 14px; padding: 13px 16px; font-size: 16px; transition: border-color .15s, background .15s; }
+    .field::placeholder { color: var(--text-3); opacity: 1; }
+    .field:focus { outline: none; border-color: var(--primary); background: var(--surface); }
+    textarea.field { resize: none; }
+    select.field { appearance: auto; }
+
+    /* 알람 시간: 설정 화면의 주인공 */
+    .time-field { width: 100%; background: transparent; border: none; color: var(--text); text-align: center;
+                  font-size: 56px; font-weight: 300; line-height: 1.1; padding: 4px 0; min-height: 72px; }
+    .time-field:focus { outline: none; }
+    .time-field::-webkit-datetime-edit { padding: 0; }
+    .time-field::-webkit-calendar-picker-indicator { display: none; }
+    .time-wrap { border-radius: 16px; transition: background .15s; }
+    .time-wrap:focus-within { background: var(--primary-soft); }
+
+    /* 걸음 목표 칩 */
+    .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+    .chip { min-height: 44px; min-width: 56px; padding: 0 16px; border-radius: 999px; font-size: 15px; font-weight: 600;
+            background: var(--surface-2); color: var(--text-2); border: 1.5px solid transparent; }
+    .chip[aria-pressed="true"] { background: var(--primary-soft); color: var(--primary-text); border-color: var(--primary); }
+
+    /* 버튼 */
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 52px; padding: 0 20px;
+           border-radius: 16px; font-size: 16px; font-weight: 600; transition: background .15s, transform .1s; user-select: none; }
+    .btn:active { transform: scale(.98); }
+    .btn-primary { background: var(--primary); color: #fff; }
+    .btn-primary:active { background: var(--primary-press); }
+    .btn-secondary { background: var(--surface-2); color: var(--text); }
+    .btn-ghost { background: transparent; color: var(--text-2); }
+    .btn-ok { background: var(--ok); color: #fff; }
+    .btn-ok:active { background: var(--ok-press); }
+    .btn-danger { background: var(--danger); color: #fff; }
+    .btn-danger:active { background: var(--danger-press); }
+    .btn-lg { min-height: 64px; font-size: 18px; border-radius: 20px; }
+    .btn:disabled { opacity: .5; transform: none; }
+    .btn-small { min-height: 44px; padding: 0 14px; font-size: 14px; border-radius: 12px; }
+
+    details > summary { list-style: none; cursor: pointer; }
+    details > summary::-webkit-details-marker { display: none; }
+    details > summary .chev { transition: transform .2s; }
+    details[open] > summary .chev { transform: rotate(90deg); }
+
+    .notice-error { background: #fde8e8; color: #9b1c1c; border-radius: 14px; padding: 12px 16px; font-size: 15px; }
+    @media (prefers-color-scheme: dark) { .notice-error { background: #3b1518; color: #fca5a5; } }
+
+    /* 아래에 붙는 주 버튼 (엄지가 닿는 곳) */
+    .bottom-bar { position: fixed; left: 0; right: 0; bottom: 0; padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+                  background: linear-gradient(to top, var(--bg) 70%, transparent); }
+
+    /* AI 아바타: 해 뜨는 느낌의 따뜻한 원 */
+    .avatar { border-radius: 999px; background: linear-gradient(145deg, var(--sun-1), var(--sun-2)); color: #fff;
+              display: flex; align-items: center; justify-content: center; flex: none; }
+
+    /* 통화 */
+    .bubble { max-width: 82%; border-radius: 20px; padding: 12px 16px; font-size: 16px; line-height: 1.6; white-space: pre-line; word-break: keep-all; overflow-wrap: anywhere; }
+    .bubble-ai { background: var(--bubble-ai); color: var(--text); border: 1px solid var(--border); border-top-left-radius: 6px; }
+    .bubble-me { background: var(--bubble-me); color: var(--bubble-me-text); border-top-right-radius: 6px; }
+    .chat-notice { text-align: center; font-size: 13px; color: var(--text-3); }
+    .stage-seg { flex: 1; height: 6px; border-radius: 999px; background: var(--surface-2); transition: background .3s; }
+    .stage-seg.on { background: var(--primary); }
+    .bar { height: 8px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+    .bar > div { height: 100%; border-radius: 999px; background: var(--ok); transition: width .4s; }
+    .status-pill { display: none; align-items: center; justify-content: center; gap: 10px; font-size: 15px; font-weight: 600; }
+    #status-listening { color: var(--ok); }
+    @media (prefers-color-scheme: dark) { #status-listening { color: #4ade80; } }
+    #status-thinking, #status-speaking { color: var(--primary-text); }
+    .mic-btn.is-listening { background: var(--ok); color: #fff; }
+    .mic-btn .rec-dot { display: none; width: 10px; height: 10px; border-radius: 999px; background: #fff; animation: blink 1.2s ease-in-out infinite; }
+    .mic-btn.is-listening .rec-dot { display: inline-block; }
+    .mic-btn.is-listening .ic { display: none; }
+
+    /* 움직임 (움직임 줄이기 설정을 켠 사람에게는 끈다) */
+    @keyframes pulse-ring { 0% { transform: scale(1); opacity: .5; } 100% { transform: scale(1.7); opacity: 0; } }
+    @keyframes shake { 0%,100% { transform: rotate(-8deg); } 50% { transform: rotate(8deg); } }
+    @keyframes wave { 0%,100% { transform: scaleY(.4); } 50% { transform: scaleY(1); } }
+    @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+    @keyframes rise { from { transform: translateY(12px); opacity: 0; } to { transform: none; opacity: 1; } }
+    .pulse-ring { position: absolute; inset: 0; border-radius: 999px; background: var(--sun-2); opacity: 0; animation: pulse-ring 2s ease-out infinite; }
+    .pulse-ring.d2 { animation-delay: .66s; } .pulse-ring.d3 { animation-delay: 1.33s; }
+    .ring-anim { animation: shake .4s ease-in-out infinite; }
+    .wave-bar { width: 4px; height: 16px; border-radius: 999px; background: currentColor; animation: wave 1s ease-in-out infinite; }
+    .wave-bar:nth-child(2) { animation-delay: .15s; } .wave-bar:nth-child(3) { animation-delay: .3s; } .wave-bar:nth-child(4) { animation-delay: .45s; }
+    .live-dot { width: 10px; height: 10px; border-radius: 999px; background: currentColor; animation: blink 1.2s ease-in-out infinite; }
+    .rise { animation: rise .5s ease-out both; }
+    @media (prefers-reduced-motion: reduce) {
+      .pulse-ring, .ring-anim, .wave-bar, .live-dot, .rise, .rec-dot { animation: none !important; }
+      .pulse-ring { opacity: 0 !important; }
+    }
+
+    .chat-scroll { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+    .chat-scroll::-webkit-scrollbar { width: 4px; }
+    .chat-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+    .safe-top { padding-top: max(16px, env(safe-area-inset-top)); }
+    .safe-bottom { padding-bottom: max(16px, env(safe-area-inset-bottom)); }
   </style>
 </head>
-<body class="bg-gray-950 text-white min-h-screen">
+<body>
+
+<!-- 아이콘 (선 아이콘 한 벌. 이모지는 기기마다 모양이 달라 화면 조작용 아이콘에는 쓰지 않는다) -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-phone" viewBox="0 0 24 24"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3"/></symbol>
+  <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 13h.01M18 13h.01M8 16h8"/></symbol>
+  <symbol id="i-alarm" viewBox="0 0 24 24"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2M5 3 2 6M22 6l-3-3"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></symbol>
+  <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></symbol>
+  <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></symbol>
+  <symbol id="i-steps" viewBox="0 0 24 24"><path d="M4 16v-2.38C4 11.5 2.97 10.5 3 8c.03-2.72 1.49-6 4.5-6C9.37 2 10 3.8 10 5.5c0 3.11-2 5.66-2 8.68V16a2 2 0 1 1-4 0ZM20 20v-2.38c0-2.12 1.03-3.12 1-5.62-.03-2.72-1.49-6-4.5-6C14.63 6 14 7.8 14 9.5c0 3.11 2 5.66 2 8.68V20a2 2 0 1 0 4 0ZM16 17h4M4 13h4"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></symbol>
+  <symbol id="i-sunrise" viewBox="0 0 24 24"><path d="M12 2v6M4.93 10.93l1.41 1.41M2 18h2M20 18h2M19.07 10.93l-1.41 1.41M22 22H2M16 18a4 4 0 0 0-8 0M8 6l4-4 4 4"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4 20-7z"/></symbol>
+  <symbol id="i-chip" viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></symbol>
+</svg>
 
 <!-- ===== VIEW: SETUP ===== -->
-<div id="view-setup" class="min-h-screen flex items-center justify-center p-4">
-  <div class="w-full max-w-md">
-    <!-- Logo -->
-    <div class="text-center mb-8">
-      <div class="text-5xl mb-3">🌅</div>
-      <h1 class="text-3xl font-bold text-indigo-400">AI 모닝콜</h1>
-      <p class="text-gray-400 mt-1 text-sm">대화로 자연스럽게 깨어나는 아침</p>
+<div id="view-setup" class="min-h-screen safe-top" style="padding-bottom: 168px">
+  <div class="w-full max-w-md mx-auto px-4 space-y-4">
+    <!-- 머리말: 짧게. 화면의 주인공은 알람 시간이다 -->
+    <div class="flex items-center gap-3 pt-2 pb-1">
+      <div class="avatar" style="width:40px;height:40px"><svg class="ic"><use href="#i-sunrise"/></svg></div>
+      <div>
+        <h1 class="text-xl font-bold leading-tight">AI 모닝콜</h1>
+        <p class="text-sm t2">전화로 대화하며 깨워 드려요</p>
+      </div>
     </div>
 
-    <div class="bg-gray-900 rounded-2xl p-6 space-y-5 border border-gray-800">
-      <!-- 폰 AI (앱 전용): 모델을 받아 두면 PC 서버·인터넷이 꺼져 있어도 폰 안에서 통화한다 -->
-      <div id="phone-ai" class="hidden bg-indigo-950/60 border border-indigo-800/50 rounded-xl px-4 py-3 space-y-2">
-        <div class="flex items-center justify-between gap-2">
-          <div>
-            <div class="text-xs font-semibold text-indigo-300 mb-0.5">📱 폰 AI · Gemma 4 E2B</div>
-            <div id="phone-ai-status" class="text-xs text-gray-400">확인 중…</div>
-          </div>
-          <button id="phone-ai-btn" onclick="PhoneAI.download()"
-            class="hidden flex-shrink-0 bg-indigo-600 hover:bg-indigo-500 px-3 py-2 rounded-lg text-xs font-semibold transition">
-            받기
-          </button>
-        </div>
-        <div id="phone-ai-bar" class="hidden h-1.5 bg-gray-700 rounded-full overflow-hidden">
-          <div id="phone-ai-fill" class="h-full bg-indigo-500 transition-all" style="width:0%"></div>
-        </div>
+    <!-- 알람 시간 (가장 먼저, 가장 크게) -->
+    <div class="card p-5">
+      <label for="inp-time" class="label">알람 시간</label>
+      <div class="time-wrap" onclick="openTimePicker()">
+        <input id="inp-time" type="time" value="07:30" class="time-field num" oninput="updateTimeHint()"/>
       </div>
+      <p id="setup-time-hint" class="text-center text-sm t2 mt-1"></p>
+    </div>
 
-      <!-- Ollama notice -->
-      <div id="server-ai" class="flex items-start gap-3 bg-indigo-950/60 border border-indigo-800/50 rounded-xl px-4 py-3">
-        <span class="text-lg mt-0.5">🦙</span>
-        <div>
-          <div class="text-xs font-semibold text-indigo-300 mb-0.5">Ollama 로컬 AI 사용 중 (무료)</div>
-          <div class="text-xs text-gray-400">API 키 불필요 · 인터넷 연결 불필요 · 완전 무료</div>
+    <!-- 폰 AI (앱 전용): 모델을 받아 두면 PC 서버·인터넷이 꺼져 있어도 폰 안에서 통화한다 -->
+    <div id="phone-ai" class="hidden card p-4 space-y-3">
+      <div class="flex items-center gap-3">
+        <div class="flex items-center justify-center rounded-xl tp" style="width:40px;height:40px;background:var(--primary-soft)"><svg class="ic"><use href="#i-chip"/></svg></div>
+        <div class="flex-1 min-w-0">
+          <div class="text-sm font-semibold">폰 AI <span class="t3 font-normal">· Gemma 4 E2B</span></div>
+          <div id="phone-ai-status" class="text-sm t2">확인 중…</div>
         </div>
+        <button id="phone-ai-btn" onclick="PhoneAI.download()" class="hidden btn btn-primary btn-small">받기</button>
       </div>
+      <div id="phone-ai-bar" class="hidden bar"><div id="phone-ai-fill" style="width:0%;background:var(--primary)"></div></div>
+    </div>
 
-      <!-- Model selector (PC 서버의 Ollama 모델. 앱에서는 폰 AI를 쓰므로 숨긴다) -->
-      <div id="model-field">
-        <label class="block text-xs font-medium text-gray-400 mb-1.5">AI 모델</label>
-        <select id="inp-model"
-          class="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 transition text-white">
-          <option value="gemma3:4b">gemma3:4b (권장 · 자연스러운 대화 · 3.3GB)</option>
-          <option value="exaone3.5:2.4b">exaone3.5:2.4b (빠름 · 한국어 특화 · 1.6GB)</option>
-          <option value="qwen2.5:3b">qwen2.5:3b (2GB)</option>
-          <option value="llama3.2">llama3.2 (2GB)</option>
-        </select>
-        <p class="text-xs text-gray-600 mt-1">모델이 없으면 터미널에서: <span class="text-indigo-400 font-mono">ollama pull gemma3:4b</span></p>
+    <!-- 깨울 때 쓰는 정보 -->
+    <div class="card p-5 space-y-5">
+      <div>
+        <label for="inp-name" class="label">뭐라고 불러 드릴까요?</label>
+        <input id="inp-name" type="text" placeholder="이름 (예: 민수)" value="" autocomplete="given-name" class="field"/>
       </div>
-
-      <!-- Server address (안드로이드 앱에서만 표시). 기본값은 APK를 빌드한 PC 주소라 보통은 열 필요가 없다 -->
-      <details id="server-field" class="hidden text-xs text-gray-500">
-        <summary class="cursor-pointer select-none">고급 설정 · PC 서버 <span id="server-current" class="font-mono"></span></summary>
-        <div class="mt-2">
-          <input id="inp-server" type="url" placeholder="비워 두면 기본 주소 사용"
-            class="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 transition"/>
-          <p class="mt-1">PC 주소가 바뀌었을 때만 http://주소:8000 형식으로 입력하세요.</p>
+      <div>
+        <label for="inp-schedule" class="label">오늘 일정 <span class="opt">(선택)</span></label>
+        <textarea id="inp-schedule" rows="2" placeholder="예: 오전 10시 팀 미팅" class="field"></textarea>
+        <p class="help">AI가 깨우면서 일정을 알려 줘요.</p>
+      </div>
+      <!-- Google Calendar: 알람이 울릴 때 그날 일정을 읽어 위 일정에 더한다 -->
+      <details id="ical-details">
+        <summary class="flex items-center justify-between" style="min-height:44px">
+          <span class="text-sm font-semibold t2">구글 캘린더 연결 <span class="t3 font-normal">(선택)</span></span>
+          <svg class="ic ic-sm t3 chev"><use href="#i-chev"/></svg>
+        </summary>
+        <div class="pt-2">
+          <input id="inp-ical" type="url" placeholder="비공개 주소(iCal 형식) 붙여 넣기" class="field"/>
+          <p class="help">PC에서 구글 캘린더 → 설정(톱니바퀴) → 왼쪽 '내 캘린더의 설정'에서 캘린더 선택 → '캘린더 통합'의 <b>비공개 주소(iCal 형식)</b>를 복사하세요. 알람이 울릴 때 그날 일정을 읽어 AI가 깨우면서 말해 줍니다.</p>
+          <p class="help">이 주소를 아는 사람은 누구나 일정을 볼 수 있으니 다른 사람에게 보여 주지 마세요.</p>
         </div>
       </details>
+    </div>
 
-      <!-- Name -->
-      <div>
-        <label class="block text-xs font-medium text-gray-400 mb-1.5">이름</label>
-        <input id="inp-name" type="text" placeholder="홍길동" value=""
-          class="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 transition"/>
+    <!-- 걸어서 끄기: 통화 중 이만큼 걸으면 바로 통화가 끝난다 (걸음은 안드로이드 앱에서만 셀 수 있다) -->
+    <div class="card p-5">
+      <div class="label">걸어서 끄기 <span class="opt">(앱 전용)</span></div>
+      <div id="step-chips" class="chips" role="group" aria-label="목표 걸음 수"></div>
+      <input id="inp-steps" type="hidden" value="30"/>
+      <p class="help">통화 중 이만큼 걸으면 대화를 마치지 않아도 바로 통화가 끝나요.</p>
+    </div>
+
+    <!-- 고급 설정: 처음 쓰는 사람은 볼 필요가 없는 것들 -->
+    <details id="advanced" class="card px-5 py-1">
+      <summary class="flex items-center justify-between" style="min-height:52px">
+        <span class="flex items-center gap-2 text-sm font-semibold t2"><svg class="ic ic-sm"><use href="#i-settings"/></svg>고급 설정</span>
+        <svg class="ic ic-sm t3 chev"><use href="#i-chev"/></svg>
+      </summary>
+      <div class="space-y-4 pb-4 pt-1">
+        <!-- PC 서버의 Ollama 안내 (앱에서는 폰 AI를 쓰므로 숨긴다) -->
+        <div id="server-ai" class="text-sm t2">PC의 Ollama 로컬 AI를 써요 · API 키·인터넷 없이 무료</div>
+        <!-- Model selector (PC 서버의 Ollama 모델. 앱에서는 폰 AI를 쓰므로 숨긴다) -->
+        <div id="model-field">
+          <label for="inp-model" class="label">AI 모델</label>
+          <select id="inp-model" class="field">
+            <option value="gemma3:4b">gemma3:4b (권장 · 자연스러운 대화 · 3.3GB)</option>
+            <option value="exaone3.5:2.4b">exaone3.5:2.4b (빠름 · 한국어 특화 · 1.6GB)</option>
+            <option value="qwen2.5:3b">qwen2.5:3b (2GB)</option>
+            <option value="llama3.2">llama3.2 (2GB)</option>
+          </select>
+          <p class="help">모델이 없으면 터미널에서: <span class="tp" style="font-family:monospace">ollama pull gemma3:4b</span></p>
+        </div>
+        <!-- Server address (안드로이드 앱에서만 표시). 기본값은 APK를 빌드한 PC 주소라 보통은 바꿀 필요가 없다 -->
+        <div id="server-field" class="hidden">
+          <label for="inp-server" class="label">PC 서버 <span id="server-current" class="opt" style="font-family:monospace"></span></label>
+          <input id="inp-server" type="url" placeholder="비워 두면 기본 주소 사용" class="field"/>
+          <p class="help">PC 주소가 바뀌었을 때만 http://주소:8000 형식으로 입력하세요.</p>
+        </div>
       </div>
+    </details>
+  </div>
 
-      <!-- Schedule -->
-      <div>
-        <label class="block text-xs font-medium text-gray-400 mb-1.5">오늘 일정 <span class="text-gray-600">(선택)</span></label>
-        <textarea id="inp-schedule" rows="2" placeholder="예: 오전 10시 팀 미팅, 오후 2시 발표 준비"
-          class="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 resize-none transition"></textarea>
-      </div>
-
-      <!-- Google Calendar: 알람이 울릴 때 그날 일정을 읽어 위 일정에 더한다 -->
-      <div>
-        <label class="block text-xs font-medium text-gray-400 mb-1.5">구글 캘린더 <span class="text-gray-600">(선택)</span></label>
-        <input id="inp-ical" type="url" placeholder="비공개 주소(iCal 형식)를 붙여 넣으세요"
-          class="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 transition"/>
-        <details class="text-xs text-gray-500 mt-1">
-          <summary class="cursor-pointer select-none">주소 찾는 법</summary>
-          <p class="mt-1">PC에서 구글 캘린더 → 설정(톱니바퀴) → 왼쪽 '내 캘린더의 설정'에서 캘린더 선택 → '캘린더 통합'의 <b>비공개 주소(iCal 형식)</b>를 복사하세요. 알람이 울릴 때 그날 일정을 읽어 AI가 깨우면서 말해 줍니다.</p>
-          <p class="mt-1">이 주소를 아는 사람은 누구나 일정을 볼 수 있으니 다른 사람에게 보여 주지 마세요.</p>
-        </details>
-      </div>
-
-      <!-- Alarm Time -->
-      <div>
-        <label class="block text-xs font-medium text-gray-400 mb-1.5">알람 시간</label>
-        <input id="inp-time" type="time" value="07:30"
-          class="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 transition text-white"/>
-      </div>
-
-      <!-- Step goal: 통화 중 이만큼 걸으면 바로 통화가 끝난다 (걸음은 안드로이드 앱에서만 셀 수 있다) -->
-      <div>
-        <label class="block text-xs font-medium text-gray-400 mb-1.5">목표 걸음 수 <span class="text-gray-600">(앱 전용 · 0이면 끔)</span></label>
-        <input id="inp-steps" type="number" min="0" max="1000" step="5" value="30"
-          class="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 transition text-white"/>
-        <p class="text-xs text-gray-600 mt-1">통화 중 이만큼 걸으면 대화를 마치지 않아도 바로 통화가 끝나요.</p>
-      </div>
-
-      <!-- Error -->
-      <div id="setup-error" class="hidden text-red-400 text-sm bg-red-900/30 rounded-xl px-4 py-3"></div>
-
-      <!-- Submit -->
-      <button onclick="startAlarm()"
-        class="w-full bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white font-semibold py-3.5 rounded-xl transition text-sm">
-        알람 설정하기 →
+  <!-- 주 버튼: 화면 아래에 붙어 있어 스크롤하지 않아도 엄지로 누를 수 있다 -->
+  <div class="bottom-bar">
+    <div class="max-w-md mx-auto space-y-2">
+      <div id="setup-error" class="hidden notice-error"></div>
+      <button onclick="startAlarm()" class="btn btn-primary btn-lg w-full">
+        <svg class="ic"><use href="#i-alarm"/></svg>알람 맞추기
       </button>
     </div>
   </div>
 </div>
 
 <!-- ===== VIEW: STANDBY ===== -->
-<div id="view-standby" class="hidden min-h-screen flex flex-col items-center justify-center p-4">
-  <!-- Big Clock -->
-  <div class="text-center mb-10">
-    <div id="clock-display" class="text-7xl font-thin tracking-widest text-white mb-2">00:00</div>
-    <div id="date-display" class="text-gray-400 text-sm"></div>
-  </div>
-
-  <!-- Countdown Card -->
-  <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6 w-full max-w-sm mb-6 text-center">
-    <div class="text-indigo-400 text-xs font-medium uppercase tracking-wider mb-2">알람까지</div>
-    <div id="countdown-display" class="text-3xl font-bold text-white mb-4">--:--:--</div>
-    <div class="text-sm text-gray-400">⏰ <span id="alarm-time-display">-</span></div>
-  </div>
-
-  <!-- Info Card -->
-  <div class="bg-gray-900 border border-gray-800 rounded-2xl p-4 w-full max-w-sm mb-6 space-y-2">
-    <div class="flex items-center gap-3 text-sm">
-      <span class="text-indigo-400 w-5">👤</span>
-      <span class="text-gray-300" id="sb-name">-</span>
+<!-- 보통 잠들기 전에 보는 화면이라 밝은 색 면을 줄이고, 알람 시각을 가장 크게 보여 준다 -->
+<div id="view-standby" class="hidden min-h-screen flex flex-col safe-top safe-bottom px-4">
+  <div class="w-full max-w-md mx-auto flex-1 flex flex-col">
+    <div class="text-center pt-4">
+      <div id="clock-display" class="text-2xl font-semibold num t2">00:00</div>
+      <div id="date-display" class="text-sm t3"></div>
     </div>
-    <div class="flex items-start gap-3 text-sm">
-      <span class="text-indigo-400 w-5 mt-0.5">📋</span>
-      <span class="text-gray-300" id="sb-schedule">일정 없음</span>
-    </div>
-    <div class="flex items-center gap-3 text-sm">
-      <span class="text-indigo-400 w-5">🌤</span>
-      <span class="text-gray-300" id="sb-weather">날씨 불러오는 중...</span>
-    </div>
-  </div>
 
-  <!-- Buttons -->
-  <div class="flex gap-3 w-full max-w-sm">
-    <button onclick="showView('setup')"
-      class="flex-1 bg-gray-800 hover:bg-gray-700 py-3 rounded-xl text-sm transition">
-      ← 설정 변경
-    </button>
-    <button onclick="triggerAlarm()"
-      class="flex-1 bg-indigo-600 hover:bg-indigo-500 py-3 rounded-xl text-sm font-semibold transition">
-      지금 테스트 ▶
-    </button>
+    <div class="flex-1 flex flex-col items-center justify-center text-center py-8">
+      <div class="flex items-center gap-2 text-sm font-semibold tp mb-2"><svg class="ic ic-sm"><use href="#i-alarm"/></svg>알람</div>
+      <div id="alarm-time-display" class="num" style="font-size:72px;font-weight:300;line-height:1">-</div>
+      <div id="countdown-display" class="text-base t2 mt-3">-</div>
+    </div>
+
+    <div class="card p-4 space-y-3 mb-4">
+      <div class="flex items-center gap-3"><svg class="ic t3"><use href="#i-user"/></svg><span id="sb-name">-</span></div>
+      <div class="flex items-start gap-3"><svg class="ic t3"><use href="#i-calendar"/></svg><span id="sb-schedule" class="t2">일정 없음</span></div>
+      <div class="flex items-start gap-3"><svg class="ic t3"><use href="#i-cloud"/></svg><span id="sb-weather" class="t2">날씨 불러오는 중...</span></div>
+    </div>
+
+    <div class="flex gap-3">
+      <button onclick="showView('setup')" class="btn btn-secondary flex-1"><svg class="ic ic-sm"><use href="#i-back"/></svg>설정 바꾸기</button>
+      <button onclick="triggerAlarm()" class="btn btn-secondary flex-1"><svg class="ic ic-sm" style="fill:currentColor;stroke:none"><use href="#i-play"/></svg>지금 울려 보기</button>
+    </div>
   </div>
 </div>
 
 <!-- ===== VIEW: RINGING ===== -->
-<div id="view-ringing" class="hidden min-h-screen flex flex-col items-center justify-center p-4 bg-gray-950">
-  <div class="text-center">
-    <!-- Pulse Rings -->
-    <div class="relative flex items-center justify-center mb-10" style="height:180px">
-      <div class="absolute w-36 h-36 rounded-full bg-indigo-600/20 pulse-ring-1"></div>
-      <div class="absolute w-36 h-36 rounded-full bg-indigo-600/20 pulse-ring-2"></div>
-      <div class="absolute w-36 h-36 rounded-full bg-indigo-600/20 pulse-ring-3"></div>
-      <div class="relative w-28 h-28 rounded-full bg-indigo-600 flex items-center justify-center ring-anim shadow-2xl">
-        <span class="text-5xl">🤖</span>
-      </div>
+<!-- 막 깬 사람이 볼 화면: 지금 시각을 크게, 할 일(전화 받기)은 하나만 크게. 스누즈는 작게 따로 둬서 잘못 누르기 어렵게 한다.
+     좌우 버튼 배치는 삼성(받기 왼쪽)과 아이폰(받기 오른쪽)이 반대라, 위아래로 쌓아 헷갈리지 않게 한다 -->
+<div id="view-ringing" class="hidden min-h-screen flex flex-col safe-top safe-bottom px-6">
+  <div class="w-full max-w-md mx-auto flex-1 flex flex-col">
+    <div class="text-center pt-8">
+      <div id="ring-clock" class="num" style="font-size:64px;font-weight:300;line-height:1.1">--:--</div>
+      <div id="ring-date" class="text-base t2 mt-1"></div>
     </div>
 
-    <div class="text-gray-400 text-sm mb-2">전화 오는 중...</div>
-    <div class="text-2xl font-bold mb-1">AI 모닝콜 비서</div>
-    <div class="text-gray-400 text-sm mb-12">알람 시간이 됐어요!</div>
+    <div class="flex-1 flex flex-col items-center justify-center">
+      <div class="relative" style="width:128px;height:128px;margin-bottom:56px">
+        <div class="pulse-ring"></div><div class="pulse-ring d2"></div><div class="pulse-ring d3"></div>
+        <div class="avatar relative" style="width:128px;height:128px"><svg class="ic ring-anim" style="width:56px;height:56px"><use href="#i-sunrise"/></svg></div>
+      </div>
+      <div class="text-2xl font-bold">AI 모닝콜</div>
+      <div class="text-base t2 mt-1">전화가 왔어요. 받으면 깨워 드릴게요</div>
+    </div>
 
-    <!-- Accept / Decline -->
-    <div class="flex gap-12 justify-center">
-      <div class="text-center">
-        <button onclick="declineCall()"
-          class="w-16 h-16 rounded-full bg-red-500 hover:bg-red-400 flex items-center justify-center text-2xl transition shadow-lg mx-auto mb-2">
-          📵
-        </button>
-        <div class="text-xs text-gray-500">거절</div>
-      </div>
-      <div class="text-center">
-        <button onclick="acceptCall()"
-          class="w-16 h-16 rounded-full bg-green-500 hover:bg-green-400 flex items-center justify-center text-2xl transition shadow-lg mx-auto mb-2">
-          📞
-        </button>
-        <div class="text-xs text-gray-500">받기</div>
-      </div>
+    <div class="space-y-2 pb-2">
+      <button onclick="acceptCall()" class="btn btn-ok btn-lg w-full" style="min-height:72px;font-size:20px">
+        <svg class="ic ic-lg"><use href="#i-phone"/></svg>전화 받기
+      </button>
+      <button onclick="declineCall()" class="btn btn-ghost w-full">5분 뒤에 다시 울리기</button>
     </div>
   </div>
 </div>
 
 <!-- ===== VIEW: CALL ===== -->
-<div id="view-call" class="hidden min-h-screen flex flex-col bg-gray-950">
+<div id="view-call" class="hidden flex flex-col" style="height:100vh;height:100dvh">
   <!-- Header -->
-  <div class="flex items-center gap-4 p-5 border-b border-gray-800">
-    <div class="w-12 h-12 rounded-full bg-indigo-600 flex items-center justify-center text-xl glow-anim flex-shrink-0">🤖</div>
-    <div class="flex-1 min-w-0">
-      <div class="font-semibold">AI 모닝콜 비서</div>
-      <div class="text-green-400 text-xs">통화 중 · <span id="call-timer">00:00</span><span id="call-steps" class="hidden"></span></div>
+  <div class="safe-top px-4 pb-3" style="border-bottom:1px solid var(--border);background:var(--bg)">
+    <div class="flex items-center gap-3">
+      <div class="avatar" style="width:44px;height:44px"><svg class="ic"><use href="#i-sunrise"/></svg></div>
+      <div class="flex-1 min-w-0">
+        <div class="font-semibold">AI 모닝콜</div>
+        <div class="text-sm t2">통화 중 · <span id="call-timer" class="num">00:00</span></div>
+      </div>
     </div>
-    <!-- Level indicator -->
-    <div class="flex gap-1">
-      <div id="lvl-0" class="w-2 h-2 rounded-full bg-indigo-600"></div>
-      <div id="lvl-1" class="w-2 h-2 rounded-full bg-gray-700"></div>
-      <div id="lvl-2" class="w-2 h-2 rounded-full bg-gray-700"></div>
-      <div id="lvl-3" class="w-2 h-2 rounded-full bg-gray-700"></div>
-      <div id="lvl-4" class="w-2 h-2 rounded-full bg-gray-700"></div>
+    <!-- 대화 단계 (0 기상 확인 → 4 마무리) -->
+    <div class="mt-3">
+      <div class="flex items-center justify-between t3 mb-1.5" style="font-size:13px"><span>깨우기 진행</span><span id="stage-label">1/5</span></div>
+      <div class="flex gap-1.5">
+        <div id="lvl-0" class="stage-seg on"></div><div id="lvl-1" class="stage-seg"></div><div id="lvl-2" class="stage-seg"></div>
+        <div id="lvl-3" class="stage-seg"></div><div id="lvl-4" class="stage-seg"></div>
+      </div>
+    </div>
+    <!-- 걸음 목표: 이 앱의 핵심 장치라 숫자를 크게 보여 준다 -->
+    <div id="call-steps" class="hidden mt-3 card p-3">
+      <div class="flex items-center gap-2 mb-2">
+        <svg class="ic" style="color:var(--ok)"><use href="#i-steps"/></svg>
+        <span class="text-sm t2 flex-1">걸으면 통화가 끝나요</span>
+        <span class="num font-bold text-lg"><span id="steps-now">0</span><span class="t3 font-normal text-base"> / <span id="steps-goal">0</span>걸음</span></span>
+      </div>
+      <div class="bar"><div id="steps-fill" style="width:0%"></div></div>
     </div>
   </div>
 
   <!-- Conversation -->
-  <div id="chat-messages" class="flex-1 overflow-y-auto p-4 space-y-3 chat-scroll">
+  <div id="chat-messages" class="flex-1 overflow-y-auto px-4 py-4 space-y-3 chat-scroll" aria-live="polite">
     <!-- Messages injected by JS -->
   </div>
 
   <!-- Status indicator -->
-  <div id="status-area" class="px-4 py-2">
-    <div id="status-thinking" class="hidden items-center gap-2 text-indigo-400 text-sm">
-      <div class="flex gap-1">
-        <div class="wave-bar w-1 h-4 bg-indigo-400 rounded-full"></div>
-        <div class="wave-bar w-1 h-4 bg-indigo-400 rounded-full"></div>
-        <div class="wave-bar w-1 h-4 bg-indigo-400 rounded-full"></div>
-        <div class="wave-bar w-1 h-4 bg-indigo-400 rounded-full"></div>
-        <div class="wave-bar w-1 h-4 bg-indigo-400 rounded-full"></div>
-      </div>
-      <span>AI가 응답 중...</span>
+  <div id="status-area" class="px-4 py-2" style="min-height:40px">
+    <div id="status-thinking" class="status-pill">
+      <div class="flex gap-1"><div class="wave-bar"></div><div class="wave-bar"></div><div class="wave-bar"></div><div class="wave-bar"></div></div>
+      <span>생각하는 중…</span>
     </div>
-    <div id="status-listening" class="hidden items-center gap-2 text-green-400 text-sm">
-      <div class="w-2.5 h-2.5 rounded-full bg-green-400 animate-pulse"></div>
-      <span>듣는 중... 말씀해주세요</span>
+    <div id="status-listening" class="status-pill">
+      <div class="live-dot"></div><span>듣고 있어요 · 말씀하세요</span>
     </div>
-    <div id="status-speaking" class="hidden items-center gap-2 text-blue-400 text-sm">
-      <div class="flex gap-1">
-        <div class="wave-bar w-1 h-4 bg-blue-400 rounded-full"></div>
-        <div class="wave-bar w-1 h-4 bg-blue-400 rounded-full"></div>
-        <div class="wave-bar w-1 h-4 bg-blue-400 rounded-full"></div>
-        <div class="wave-bar w-1 h-4 bg-blue-400 rounded-full"></div>
-        <div class="wave-bar w-1 h-4 bg-blue-400 rounded-full"></div>
-      </div>
-      <span>AI가 말하는 중...</span>
+    <div id="status-speaking" class="status-pill">
+      <div class="flex gap-1"><div class="wave-bar"></div><div class="wave-bar"></div><div class="wave-bar"></div><div class="wave-bar"></div></div>
+      <span>말하는 중…</span>
     </div>
   </div>
 
   <!-- Text input fallback -->
   <div class="px-4 pb-2">
     <div id="text-input-area" class="hidden flex gap-2">
-      <input id="text-input" type="text" placeholder="말하기 대신 입력하세요..."
-        class="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-indigo-500 transition"
+      <input id="text-input" type="text" placeholder="말하기 대신 입력하세요" class="field flex-1"
         onkeydown="if(event.key==='Enter') sendTextMessage()"/>
-      <button onclick="sendTextMessage()"
-        class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2.5 rounded-xl text-sm transition">전송</button>
+      <button onclick="sendTextMessage()" class="btn btn-primary" style="min-width:56px;padding:0" aria-label="보내기"><svg class="ic"><use href="#i-send"/></svg></button>
     </div>
   </div>
 
   <!-- Footer -->
-  <div class="p-4 border-t border-gray-800 flex gap-3">
-    <!-- Mic button -->
-    <button id="btn-mic" onclick="toggleMic()"
-      class="flex-1 flex items-center justify-center gap-2 bg-gray-800 hover:bg-gray-700 py-3.5 rounded-xl text-sm transition">
-      <span id="mic-icon">🎤</span>
-      <span id="mic-label">음성 입력</span>
-    </button>
-
-    <!-- Toggle text input -->
-    <button onclick="toggleTextInput()"
-      class="bg-gray-800 hover:bg-gray-700 px-4 py-3.5 rounded-xl text-sm transition" title="텍스트 입력">
-      ⌨️
-    </button>
-
-    <!-- End call (disabled until alarm can end) -->
-    <button id="btn-end-call" onclick="endCall()" disabled
-      class="flex-1 flex items-center justify-center gap-2 bg-gray-800 text-gray-600 py-3.5 rounded-xl text-sm transition cursor-not-allowed"
-      title="아직 통화를 끊을 수 없어요">
-      <span>📵</span>
-      <span>통화 종료</span>
+  <div class="px-4 pt-2 safe-bottom" style="border-top:1px solid var(--border);background:var(--bg)">
+    <div class="flex gap-3">
+      <button id="btn-mic" onclick="toggleMic()" class="btn btn-secondary mic-btn flex-1" style="min-height:56px">
+        <svg class="ic"><use href="#i-mic"/></svg><span class="rec-dot"></span>
+        <span id="mic-label">말하기</span>
+      </button>
+      <button onclick="toggleTextInput()" class="btn btn-secondary" style="min-height:56px;min-width:56px;padding:0" aria-label="글자로 입력" title="글자로 입력">
+        <svg class="ic"><use href="#i-keyboard"/></svg>
+      </button>
+    </div>
+    <!-- 통화 종료: 다 일어났다고 판단되기 전에는 버튼 대신 안내만 보여 준다 (회색 비활성 버튼은 왜 안 눌리는지 알 수 없다) -->
+    <p id="end-hint" class="text-center text-sm t3 pt-3">완전히 일어나면 통화를 끝낼 수 있어요</p>
+    <button id="btn-end-call" onclick="endCall()" class="hidden btn btn-danger w-full mt-3" style="min-height:56px">
+      <svg class="ic" style="transform:rotate(135deg)"><use href="#i-phone"/></svg>통화 끝내기
     </button>
   </div>
 </div>
 
 <!-- ===== VIEW: DONE ===== -->
-<div id="view-done" class="hidden min-h-screen flex flex-col items-center justify-center p-4 text-center">
-  <div class="text-6xl mb-6 float-anim">☀️</div>
-  <h2 class="text-2xl font-bold mb-2">좋은 하루 되세요!</h2>
-  <p class="text-gray-400 mb-2">기상 완료</p>
-  <p id="done-time" class="text-indigo-400 font-semibold text-lg mb-10"></p>
-  <button onclick="resetApp()"
-    class="bg-indigo-600 hover:bg-indigo-500 px-8 py-3 rounded-xl font-semibold transition">
-    새 알람 설정하기
-  </button>
+<div id="view-done" class="hidden min-h-screen flex flex-col safe-top safe-bottom px-6">
+  <div class="w-full max-w-md mx-auto flex-1 flex flex-col items-center justify-center text-center rise">
+    <div class="avatar mb-6" style="width:96px;height:96px"><svg class="ic" style="width:48px;height:48px"><use href="#i-sun"/></svg></div>
+    <h2 class="text-3xl font-bold mb-2">좋은 하루 되세요!</h2>
+    <p id="done-time" class="text-lg font-semibold tp"></p>
+    <p id="done-stats" class="text-base t2 mt-1"></p>
+  </div>
+  <div class="w-full max-w-md mx-auto pb-2">
+    <button onclick="resetApp()" class="btn btn-primary btn-lg w-full">새 알람 맞추기</button>
+  </div>
 </div>
 
 <script>
@@ -831,8 +909,7 @@ function addMessage(role, text) {
   const div = document.createElement('div');
   div.className = `flex ${isAI ? 'justify-start' : 'justify-end'}`;
   const bubble = document.createElement('div');
-  bubble.className = `max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-line ${
-    isAI ? 'bg-indigo-900/60 text-indigo-100 rounded-tl-sm' : 'bg-gray-700 text-white rounded-tr-sm'}`;
+  bubble.className = `bubble ${isAI ? 'bubble-ai' : 'bubble-me'}`;
   bubble.textContent = text;
   div.appendChild(bubble);
   el.appendChild(div);
@@ -842,9 +919,58 @@ function addMessage(role, text) {
 
 function updateLevelIndicators(level) {
   for (let i = 0; i <= LAST_STAGE; i++) {
-    const el = document.getElementById(`lvl-${i}`);
-    el.className = `w-2 h-2 rounded-full ${i <= level ? 'bg-indigo-500' : 'bg-gray-700'}`;
+    document.getElementById(`lvl-${i}`).classList.toggle('on', i <= level);
   }
+  document.getElementById('stage-label').textContent = `${Math.min(level, LAST_STAGE) + 1}/${LAST_STAGE + 1}`;
+}
+
+// ─── 시각 표시 ───────────────────────────────────────────────────────────────
+// 폰 기본 시계처럼 '오전 7:30'으로 보여 준다
+function fmtTime(h, m) {
+  return `${h < 12 ? '오전' : '오후'} ${h % 12 || 12}:${String(m).padStart(2, '0')}`;
+}
+function fmtHHMM(hhmm) {
+  const [h, m] = (hhmm || '').split(':').map(Number);
+  return Number.isFinite(h) && Number.isFinite(m) ? fmtTime(h, m) : '-';
+}
+// 다음 알람까지 남은 시간: '7시간 38분 후에 울려요' (초 단위로 바뀌는 숫자는 잠들기 전에 거슬린다)
+function untilText(hhmm) {
+  const [ah, am] = (hhmm || '').split(':').map(Number);
+  if (!Number.isFinite(ah) || !Number.isFinite(am)) return '';
+  const now = new Date();
+  const alarm = new Date(); alarm.setHours(ah, am, 0, 0);
+  if (alarm <= now) alarm.setDate(alarm.getDate() + 1);
+  const mins = Math.ceil((alarm - now) / 60000);
+  const h = Math.floor(mins / 60), m = mins % 60;
+  const left = h ? `${h}시간${m ? ` ${m}분` : ''}` : `${m}분`;
+  const day = alarm.getDate() === now.getDate() ? '오늘' : '내일';
+  return `${day} ${fmtTime(ah, am)} · ${left} 후에 울려요`;
+}
+function updateTimeHint() {
+  document.getElementById('setup-time-hint').textContent = untilText(document.getElementById('inp-time').value);
+}
+// 시간 칸 어디를 눌러도 시간 선택기가 열리게 한다 (지원하는 브라우저에서만)
+function openTimePicker() {
+  try { document.getElementById('inp-time').showPicker(); } catch {}
+}
+
+// ─── 걸음 목표 칩 ─────────────────────────────────────────────────────────────
+// 숫자를 타자로 넣는 대신 자주 쓰는 값을 누른다. 예전에 직접 넣은 값이 있으면 칩으로 하나 더 보여 준다
+const STEP_PRESETS = [0, 20, 30, 50, 100];
+function renderStepChips() {
+  const current = Math.max(0, Math.min(1000, parseInt(document.getElementById('inp-steps').value, 10) || 0));
+  const values = [...new Set([...STEP_PRESETS, current])].sort((a, b) => a - b);
+  const box = document.getElementById('step-chips');
+  box.innerHTML = '';
+  values.forEach((v) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'chip num';
+    b.textContent = v ? `${v}걸음` : '끄기';
+    b.setAttribute('aria-pressed', String(v === current));
+    b.onclick = () => { document.getElementById('inp-steps').value = String(v); renderStepChips(); };
+    box.appendChild(b);
+  });
 }
 
 // ─── Setup ────────────────────────────────────────────────────────────────────
@@ -865,6 +991,8 @@ function loadSaved() {
     document.getElementById('model-field').classList.add('hidden');
     PhoneAI.render();
   }
+  renderStepChips();
+  updateTimeHint();
 }
 
 // 입력값을 검사해 S에 반영한다. 문제가 있으면 오류를 보여 주고 false
@@ -890,7 +1018,7 @@ function applySettings() {
       NATIVE.setServerUrl(server);
     }
     if (!NATIVE.getServerUrl() && !PhoneAI.usable()) {
-      document.getElementById('server-field').open = true;
+      document.getElementById('advanced').open = true;
       return showErr('폰 AI 모델을 받거나, 고급 설정에서 PC 서버 주소를 입력해주세요.');
     }
   }
@@ -908,7 +1036,7 @@ function applySettings() {
 
   document.getElementById('sb-name').textContent = name;
   updateSchedule();
-  document.getElementById('alarm-time-display').textContent = time;
+  document.getElementById('alarm-time-display').textContent = fmtHHMM(time);
   return true;
 }
 
@@ -990,20 +1118,10 @@ function startClock() {
   if (S.clockInterval) clearInterval(S.clockInterval);
   const tick = () => {
     const now = new Date();
-    document.getElementById('clock-display').textContent =
-      now.toLocaleTimeString('ko-KR', {hour:'2-digit', minute:'2-digit', hour12:false});
+    document.getElementById('clock-display').textContent = `지금 ${fmtTime(now.getHours(), now.getMinutes())}`;
     document.getElementById('date-display').textContent =
-      now.toLocaleDateString('ko-KR', {year:'numeric', month:'long', day:'numeric', weekday:'long'});
-
-    const [ah, am] = S.alarmTime.split(':').map(Number);
-    const alarm = new Date(); alarm.setHours(ah, am, 0, 0);
-    if (alarm <= now) alarm.setDate(alarm.getDate() + 1);
-    const diff = alarm - now;
-    const h = Math.floor(diff / 3600000);
-    const m = Math.floor((diff % 3600000) / 60000);
-    const s = Math.floor((diff % 60000) / 1000);
-    document.getElementById('countdown-display').textContent =
-      `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+      now.toLocaleDateString('ko-KR', {month:'long', day:'numeric', weekday:'long'});
+    document.getElementById('countdown-display').textContent = untilText(S.alarmTime);
   };
   tick();
   S.clockInterval = setInterval(tick, 1000);
@@ -1080,6 +1198,7 @@ function triggerAlarm() {
   clearInterval(S.alarmCheckInterval);
   clearInterval(S.clockInterval);
   showView('ringing');
+  startRingClock();
   startRingSound();
   S.callInfo = null;
   S.calendarPromise = loadTodayCalendar();
@@ -1114,7 +1233,21 @@ function startRingSound() {
   S.ringInterval = setInterval(play, 1400);
 }
 
+// 울리는 화면의 큰 시계 (막 깨면 가장 먼저 지금 몇 시인지 본다)
+function startRingClock() {
+  clearInterval(S.ringClockInterval);
+  const tick = () => {
+    const now = new Date();
+    document.getElementById('ring-clock').textContent = fmtTime(now.getHours(), now.getMinutes());
+    document.getElementById('ring-date').textContent =
+      now.toLocaleDateString('ko-KR', { month: 'long', day: 'numeric', weekday: 'long' });
+  };
+  tick();
+  S.ringClockInterval = setInterval(tick, 1000);
+}
+
 function stopRingSound() {
+  clearInterval(S.ringClockInterval);
   if (NATIVE) NATIVE.stopRinging();
   if (S.ringInterval) { clearInterval(S.ringInterval); S.ringInterval = null; }
   try { if (S.audioCtx) { S.audioCtx.close(); S.audioCtx = null; } } catch(e){}
@@ -1129,7 +1262,7 @@ function declineCall() {
     const d = new Date(); d.setMinutes(d.getMinutes() + 5);
     return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
   })();
-  document.getElementById('alarm-time-display').textContent = S.alarmTime;
+  document.getElementById('alarm-time-display').textContent = fmtHHMM(S.alarmTime);
   showView('standby');
   startClock();
   if (NATIVE) NATIVE.snooze(5);
@@ -1151,10 +1284,10 @@ async function acceptCall() {
   CallTelemetry.start();
   startStepGoal();
 
-  // Disable end call button
-  const btnEnd = document.getElementById('btn-end-call');
-  btnEnd.disabled = true;
-  btnEnd.className = 'flex-1 flex items-center justify-center gap-2 bg-gray-800 text-gray-600 py-3.5 rounded-xl text-sm transition cursor-not-allowed';
+  // 통화 종료 버튼은 다 일어났다고 판단될 때까지 숨기고 안내 문구를 보여 준다
+  document.getElementById('btn-end-call').classList.add('hidden');
+  document.getElementById('end-hint').classList.remove('hidden');
+  updateLevelIndicators(0);
 
   // Start call timer
   S.callStartTime = Date.now();
@@ -1169,7 +1302,6 @@ async function acceptCall() {
   if (!Voice.canListen()) {
     document.getElementById('text-input-area').classList.remove('hidden');
     document.getElementById('btn-mic').disabled = true;
-    document.getElementById('btn-mic').className = 'flex-1 flex items-center justify-center gap-2 bg-gray-800 text-gray-600 py-3.5 rounded-xl text-sm cursor-not-allowed';
   }
 
   // 첫 인사: 벨이 울리는 동안 미리 받아 둔 것을 쓴다
@@ -1225,8 +1357,8 @@ function startListening() {
 
   showStatus('listening');
   S.isListening = true;
-  document.getElementById('mic-icon').textContent = '🔴';
-  document.getElementById('mic-label').textContent = '듣는 중...';
+  document.getElementById('btn-mic').classList.add('is-listening');
+  document.getElementById('mic-label').textContent = '듣는 중';
 
   Voice.listen(
     (transcript) => {
@@ -1261,15 +1393,15 @@ function onSilence() {
 function stopListening() {
   S.isListening = false;
   hideStatus();
-  document.getElementById('mic-icon').textContent = '🎤';
-  document.getElementById('mic-label').textContent = '음성 입력';
+  document.getElementById('btn-mic').classList.remove('is-listening');
+  document.getElementById('mic-label').textContent = '말하기';
   Voice.stopListening();
 }
 
 function addNotice(text) {
   const el = document.getElementById('chat-messages');
   const div = document.createElement('div');
-  div.className = 'text-center text-xs text-gray-500';
+  div.className = 'chat-notice';
   div.textContent = text;
   el.appendChild(div);
   scrollChat();
@@ -1420,9 +1552,8 @@ async function serverChat(body, signal, onEvent) {
 }
 
 function enableEndCall() {
-  const btnEnd = document.getElementById('btn-end-call');
-  btnEnd.disabled = false;
-  btnEnd.className = 'flex-1 flex items-center justify-center gap-2 bg-red-600 hover:bg-red-500 py-3.5 rounded-xl text-sm font-semibold transition cursor-pointer';
+  document.getElementById('btn-end-call').classList.remove('hidden');
+  document.getElementById('end-hint').classList.add('hidden');
 }
 
 // ─── 걸음 수 목표 ─────────────────────────────────────────────────────────────
@@ -1436,9 +1567,16 @@ function startStepGoal() {
   S.endingByWalk = false;
   const el = document.getElementById('call-steps');
   if (!activeStepGoal()) { el.classList.add('hidden'); return; }
-  el.textContent = ` · 🚶 0/${S.stepGoal}걸음`;
+  renderSteps(0);
   el.classList.remove('hidden');
   NATIVE.startStepCount();
+}
+
+function renderSteps(n) {
+  const shown = Math.min(n, S.stepGoal);
+  document.getElementById('steps-now').textContent = shown;
+  document.getElementById('steps-goal').textContent = S.stepGoal;
+  document.getElementById('steps-fill').style.width = `${S.stepGoal ? Math.round(shown * 100 / S.stepGoal) : 0}%`;
 }
 
 function stopStepGoal() {
@@ -1448,7 +1586,7 @@ function stopStepGoal() {
 window.onNativeSteps = (n) => {
   if (!activeStepGoal() || S.endingByWalk || S.callEnded) return;
   S.steps = n;
-  document.getElementById('call-steps').textContent = ` · 🚶 ${Math.min(n, S.stepGoal)}/${S.stepGoal}걸음`;
+  renderSteps(n);
   if (n >= S.stepGoal) finishByWalking();
 };
 
@@ -1494,8 +1632,11 @@ function endCall(endedBy = 'button') {
   if (sessionId) startWakeMonitor(sessionId);
 
   const now = new Date();
-  document.getElementById('done-time').textContent =
-    now.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: true }) + ' 기상 ✓';
+  document.getElementById('done-time').textContent = `${fmtTime(now.getHours(), now.getMinutes())} 기상 완료`;
+  const sec = Math.round((Date.now() - S.callStartTime) / 1000);
+  const talk = sec >= 60 ? `${Math.floor(sec / 60)}분 ${sec % 60}초` : `${sec}초`;
+  document.getElementById('done-stats').textContent =
+    `통화 ${talk}${activeStepGoal() && S.steps ? ` · ${S.steps}걸음 걸었어요` : ''}`;
   showView('done');
 }
 

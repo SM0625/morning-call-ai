@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 폰의 라이트/다크 설정을 따른다. targetSdk 33 이상에서는 WebView의 prefers-color-scheme이
+     이 테마의 isLightTheme로 정해지므로, 테마가 다크로 고정돼 있으면 화면도 항상 다크가 된다.
+     배경색은 static/index.html의 배경색(bg)과 같게 해서 앱이 열릴 때 색이 번쩍 바뀌지 않게 한다 -->
+<resources>
+    <style name="AppTheme" parent="@android:style/Theme.DeviceDefault.Light.NoActionBar">
+        <item name="android:windowBackground">@color/app_bg</item>
+        <item name="android:statusBarColor">@color/app_bg</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>

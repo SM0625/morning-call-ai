@@ -34,16 +34,17 @@
     <application
         android:icon="@mipmap/ic_launcher"
         android:label="AI 모닝콜"
-        android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
+        android:theme="@style/AppTheme"
         android:usesCleartextTraffic="true">
 
         <!-- 폰 AI(LiteRT-LM)가 GPU로 돌 때 쓰는 기기 라이브러리. 없는 폰은 CPU로 돈다 -->
         <uses-native-library android:name="libOpenCL.so" android:required="false" />
         <uses-native-library android:name="libvndksupport.so" android:required="false" />
 
+        <!-- uiMode: 다크 모드 예약(일몰~일출)이 아침 통화 중에 바뀌어도 화면을 다시 만들지 않는다 (다시 만들면 통화가 끊긴다) -->
         <activity
             android:name=".MainActivity"
-            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
             android:exported="true"
             android:launchMode="singleTask"
             android:showWhenLocked="true"

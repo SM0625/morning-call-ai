@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="ic_launcher_background">#FF312E81</color>
+    <!-- static/index.html의 배경색 bg (라이트) -->
+    <color name="app_bg">#FFF5F6FA</color>
 </resources>
