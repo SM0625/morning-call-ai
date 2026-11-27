@@ -284,8 +284,9 @@ class MainActivity : Activity() {
     }
 
     // ─── 알람 ────────────────────────────────────────────────────────────────────
-    private fun scheduleAlarm(triggerAt: Long) {
-        val exact = AlarmScheduler.schedule(this, triggerAt)
+    private fun scheduleAlarm(triggerAt: Long) = toastAlarm(triggerAt, AlarmScheduler.schedule(this, triggerAt))
+
+    private fun toastAlarm(triggerAt: Long, exact: Boolean) {
         val time = SimpleDateFormat("M월 d일 HH:mm", Locale.KOREA).format(Date(triggerAt))
         val message = if (exact) "$time 에 모닝콜이 울려요"
         else "$time 알람을 등록했지만, 정확한 알람 권한이 없어 조금 늦게 울릴 수 있어요"
@@ -341,7 +342,14 @@ class MainActivity : Activity() {
         fun stopListening() = runOnUiThread { stopListeningNative() }
 
         @JavascriptInterface
-        fun setAlarm(hour: Int, minute: Int) = scheduleAlarm(AlarmScheduler.nextTrigger(hour, minute))
+        fun setAlarm(hour: Int, minute: Int) = setAlarmDays(hour, minute, 0)
+
+        /** daysMask: 비트 i가 켜진 요일마다 반복 (0 일요일 … 6 토요일). 0이면 한 번만 */
+        @JavascriptInterface
+        fun setAlarmDays(hour: Int, minute: Int, daysMask: Int) {
+            val (at, exact) = AlarmScheduler.setAlarm(this@MainActivity, hour, minute, daysMask)
+            toastAlarm(at, exact)
+        }
 
         @JavascriptInterface
         fun snooze(minutes: Int) = scheduleAlarm(System.currentTimeMillis() + minutes * 60_000L)

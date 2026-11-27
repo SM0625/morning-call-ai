@@ -74,6 +74,14 @@
     .chip { min-height: 44px; min-width: 56px; padding: 0 16px; border-radius: 999px; font-size: 15px; font-weight: 600;
             background: var(--surface-2); color: var(--text-2); border: 1.5px solid transparent; }
     .chip[aria-pressed="true"] { background: var(--primary-soft); color: var(--primary-text); border-color: var(--primary); }
+    /* 반복 요일: 7개가 한 줄에 들어가도록 칸을 나눠 쓴다 (높이 44px) */
+    .day-chip { flex: 1; min-width: 0; height: 44px; border-radius: 999px; font-size: 15px; font-weight: 600;
+                background: var(--surface-2); color: var(--text-2); border: 1.5px solid transparent; }
+    .day-chip.sun:not([aria-pressed="true"]) { color: var(--danger); }
+    .day-chip[aria-pressed="true"] { background: var(--primary); color: #fff; }
+    .day-preset { min-height: 32px; padding: 0 10px; border-radius: 999px; font-size: 13px; font-weight: 600; color: var(--primary-text); }
+    .day-preset:active { background: var(--primary-soft); }
+    @media (prefers-color-scheme: dark) { .day-chip.sun:not([aria-pressed="true"]) { color: #f87171; } }
 
     /* 버튼 */
     .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 52px; padding: 0 20px;
@@ -190,7 +198,18 @@
       <div class="time-wrap" onclick="openTimePicker()">
         <input id="inp-time" type="time" value="07:30" class="time-field num" oninput="updateTimeHint()"/>
       </div>
-      <p id="setup-time-hint" class="text-center text-sm t2 mt-1"></p>
+      <!-- 반복 요일: 아무것도 고르지 않으면 한 번만 울린다 (삼성·구글 시계와 같은 방식) -->
+      <div class="flex items-center justify-between mt-4 mb-2">
+        <span class="text-sm font-semibold t2">반복</span>
+        <div class="flex gap-1.5">
+          <button type="button" class="day-preset" onclick="setDays([1,2,3,4,5])">평일</button>
+          <button type="button" class="day-preset" onclick="setDays([0,6])">주말</button>
+          <button type="button" class="day-preset" onclick="setDays([0,1,2,3,4,5,6])">매일</button>
+        </div>
+      </div>
+      <div id="day-chips" class="flex gap-1.5" role="group" aria-label="반복 요일"></div>
+      <input id="inp-days" type="hidden" value=""/>
+      <p id="setup-time-hint" class="text-center text-sm t2 mt-3"></p>
     </div>
 
     <!-- 폰 AI (앱 전용): 모델을 받아 두면 PC 서버·인터넷이 꺼져 있어도 폰 안에서 통화한다 -->
@@ -290,7 +309,7 @@
     </div>
 
     <div class="flex-1 flex flex-col items-center justify-center text-center py-8">
-      <div class="flex items-center gap-2 text-sm font-semibold tp mb-2"><svg class="ic ic-sm"><use href="#i-alarm"/></svg>알람</div>
+      <div class="flex items-center gap-2 text-sm font-semibold tp mb-2"><svg class="ic ic-sm"><use href="#i-alarm"/></svg>알람 · <span id="alarm-repeat">한 번만</span></div>
       <div id="alarm-time-display" class="num" style="font-size:72px;font-weight:300;line-height:1">-</div>
       <div id="countdown-display" class="text-base t2 mt-3">-</div>
     </div>
@@ -305,6 +324,7 @@
       <button onclick="showView('setup')" class="btn btn-secondary flex-1"><svg class="ic ic-sm"><use href="#i-back"/></svg>설정 바꾸기</button>
       <button onclick="triggerAlarm()" class="btn btn-secondary flex-1"><svg class="ic ic-sm" style="fill:currentColor;stroke:none"><use href="#i-play"/></svg>지금 울려 보기</button>
     </div>
+    <button onclick="resetApp()" class="btn btn-ghost w-full mt-1">알람 끄기</button>
   </div>
 </div>
 
@@ -423,7 +443,8 @@
     <p id="done-stats" class="text-base t2 mt-1"></p>
   </div>
   <div class="w-full max-w-md mx-auto pb-2">
-    <button onclick="resetApp()" class="btn btn-primary btn-lg w-full">새 알람 맞추기</button>
+    <!-- 반복 알람이면 다음 알람을 그대로 두고 대기 화면으로, 한 번 알람이면 새로 맞추러 간다 -->
+    <button id="btn-done" onclick="afterDone()" class="btn btn-primary btn-lg w-full">새 알람 맞추기</button>
   </div>
 </div>
 
@@ -933,21 +954,92 @@ function fmtHHMM(hhmm) {
   const [h, m] = (hhmm || '').split(':').map(Number);
   return Number.isFinite(h) && Number.isFinite(m) ? fmtTime(h, m) : '-';
 }
-// 다음 알람까지 남은 시간: '7시간 38분 후에 울려요' (초 단위로 바뀌는 숫자는 잠들기 전에 거슬린다)
-function untilText(hhmm) {
-  const [ah, am] = (hhmm || '').split(':').map(Number);
-  if (!Number.isFinite(ah) || !Number.isFinite(am)) return '';
-  const now = new Date();
-  const alarm = new Date(); alarm.setHours(ah, am, 0, 0);
-  if (alarm <= now) alarm.setDate(alarm.getDate() + 1);
-  const mins = Math.ceil((alarm - now) / 60000);
-  const h = Math.floor(mins / 60), m = mins % 60;
-  const left = h ? `${h}시간${m ? ` ${m}분` : ''}` : `${m}분`;
-  const day = alarm.getDate() === now.getDate() ? '오늘' : '내일';
-  return `${day} ${fmtTime(ah, am)} · ${left} 후에 울려요`;
+// ─── 반복 요일 ───────────────────────────────────────────────────────────────
+// 요일 번호는 Date.getDay()와 같다 (0 일요일 … 6 토요일). 빈 배열이면 한 번만 울린다.
+// 앱에서는 비트 묶음(daysMask)으로 바꿔 안드로이드 알람(AlarmScheduler.kt)에 넘긴다
+const DAY_NAMES = ['일', '월', '화', '수', '목', '금', '토'];
+const DAY_ORDER = [1, 2, 3, 4, 5, 6, 0];  // 화면에는 월요일부터 보여 준다 (한국 달력·학교·회사 기준)
+
+function parseDays(text) {
+  // ''를 Number로 바꾸면 0(일요일)이 되므로 빈 칸은 먼저 뺀다
+  const nums = String(text ?? '').split(',').map(s => s.trim()).filter(Boolean).map(Number);
+  return [...new Set(nums.filter(d => Number.isInteger(d) && d >= 0 && d <= 6))].sort((a, b) => a - b);
 }
+function daysMask(days) { return days.reduce((m, d) => m | (1 << d), 0); }
+
+function repeatLabel(days) {
+  const key = days.join(',');
+  if (!days.length) return '한 번만';
+  if (days.length === 7) return '매일';
+  if (key === '1,2,3,4,5') return '평일';
+  if (key === '0,6') return '주말';
+  return `매주 ${DAY_ORDER.filter(d => days.includes(d)).map(d => DAY_NAMES[d]).join('·')}`;
+}
+
+// 다음에 울릴 때. 반복 요일이 있으면 그 요일 중 가장 가까운 날
+function nextAlarmDate(hhmm, days = []) {
+  const [ah, am] = (hhmm || '').split(':').map(Number);
+  if (!Number.isFinite(ah) || !Number.isFinite(am)) return null;
+  const now = new Date();
+  for (let add = 0; add <= 7; add++) {
+    const d = new Date(); d.setDate(d.getDate() + add); d.setHours(ah, am, 0, 0);
+    if (d > now && (!days.length || days.includes(d.getDay()))) return d;
+  }
+  return null;
+}
+
+// 다음 알람까지 남은 시간: '내일 오전 7:30 · 7시간 38분 후에 울려요' (초 단위로 바뀌는 숫자는 잠들기 전에 거슬린다)
+function untilText(hhmm, days = []) {
+  const alarm = nextAlarmDate(hhmm, days);
+  if (!alarm) return '';
+  const now = new Date();
+  const mins = Math.ceil((alarm - now) / 60000);
+  const dd = Math.floor(mins / 1440), h = Math.floor((mins % 1440) / 60), m = mins % 60;
+  const left = dd ? `${dd}일${h ? ` ${h}시간` : ''}` : h ? `${h}시간${m ? ` ${m}분` : ''}` : `${m}분`;
+  const startOf = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate());
+  const diffDays = Math.round((startOf(alarm) - startOf(now)) / 86400000);
+  const day = diffDays === 0 ? '오늘' : diffDays === 1 ? '내일'
+    : `${diffDays >= 7 ? '다음 주 ' : ''}${DAY_NAMES[alarm.getDay()]}요일`;
+  return `${day} ${fmtTime(alarm.getHours(), alarm.getMinutes())} · ${left} 후에 울려요`;
+}
+
+function selectedDays() { return parseDays(document.getElementById('inp-days').value); }
+
+function setDays(days) {
+  // 이미 그 묶음이면 다시 누를 때 해제한다 (한 번만으로)
+  const same = selectedDays().join(',') === [...days].sort((a, b) => a - b).join(',');
+  document.getElementById('inp-days').value = same ? '' : days.join(',');
+  renderDayChips();
+}
+
+function renderDayChips() {
+  const days = selectedDays();
+  const box = document.getElementById('day-chips');
+  box.innerHTML = '';
+  DAY_ORDER.forEach((d) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = `day-chip${d === 0 ? ' sun' : ''}`;
+    b.textContent = DAY_NAMES[d];
+    b.setAttribute('aria-pressed', String(days.includes(d)));
+    b.setAttribute('aria-label', `${DAY_NAMES[d]}요일`);
+    b.onclick = () => {
+      const cur = selectedDays();
+      setDaysRaw(cur.includes(d) ? cur.filter(x => x !== d) : [...cur, d]);
+    };
+    box.appendChild(b);
+  });
+  updateTimeHint();
+}
+function setDaysRaw(days) {
+  document.getElementById('inp-days').value = parseDays(days.join(',')).join(',');
+  renderDayChips();
+}
+
 function updateTimeHint() {
-  document.getElementById('setup-time-hint').textContent = untilText(document.getElementById('inp-time').value);
+  const days = selectedDays();
+  const until = untilText(document.getElementById('inp-time').value, days);
+  document.getElementById('setup-time-hint').textContent = days.length ? `${repeatLabel(days)} · ${until}` : until;
 }
 // 시간 칸 어디를 눌러도 시간 선택기가 열리게 한다 (지원하는 브라우저에서만)
 function openTimePicker() {
@@ -981,6 +1073,7 @@ function loadSaved() {
   document.getElementById('inp-ical').value     = localStorage.getItem('mc_ical') || '';
   document.getElementById('inp-time').value     = localStorage.getItem('mc_time') || '07:30';
   document.getElementById('inp-steps').value    = localStorage.getItem('mc_step_goal') ?? '30';
+  document.getElementById('inp-days').value     = localStorage.getItem('mc_days') || '';
   if (NATIVE) {
     document.getElementById('server-field').classList.remove('hidden');
     document.getElementById('server-current').textContent = NATIVE.getServerUrl() || '(미설정)';
@@ -992,7 +1085,7 @@ function loadSaved() {
     PhoneAI.render();
   }
   renderStepChips();
-  updateTimeHint();
+  renderDayChips();
 }
 
 // 입력값을 검사해 S에 반영한다. 문제가 있으면 오류를 보여 주고 false
@@ -1027,6 +1120,9 @@ function applySettings() {
   const stepGoal = Math.max(0, Math.min(1000, parseInt(document.getElementById('inp-steps').value, 10) || 0));
   S.model = model; S.userName = name; S.manualSchedule = schedule; S.icalUrl = ical; S.alarmTime = time;
   S.stepGoal = stepGoal;
+  S.repeatDays = selectedDays();
+  S.snoozed = false;
+  localStorage.setItem('mc_days', S.repeatDays.join(','));
   localStorage.setItem('mc_step_goal', String(stepGoal));
   localStorage.setItem('mc_model', model);
   localStorage.setItem('mc_name', name);
@@ -1037,6 +1133,7 @@ function applySettings() {
   document.getElementById('sb-name').textContent = name;
   updateSchedule();
   document.getElementById('alarm-time-display').textContent = fmtHHMM(time);
+  document.getElementById('alarm-repeat').textContent = repeatLabel(S.repeatDays);
   return true;
 }
 
@@ -1107,13 +1204,18 @@ function startAlarm() {
   if (NATIVE) {
     // 안드로이드 알람으로 등록해야 화면이 꺼져 있거나 앱이 닫혀 있어도 울린다
     const [h, m] = S.alarmTime.split(':').map(Number);
-    NATIVE.setAlarm(h, m);
+    // 반복 요일은 예전 앱(setAlarmDays가 없는 APK)에서는 쓸 수 없어 한 번 알람으로 맞춘다
+    if (NATIVE.setAlarmDays) NATIVE.setAlarmDays(h, m, daysMask(S.repeatDays));
+    else NATIVE.setAlarm(h, m);
   } else {
     startAlarmCheck();
   }
 }
 
 // ─── Clock & Countdown ────────────────────────────────────────────────────────
+// 스누즈 중에는 요일과 상관없이 5분 뒤에 울린다
+function alarmDays() { return S.snoozed ? [] : (S.repeatDays || []); }
+
 function startClock() {
   if (S.clockInterval) clearInterval(S.clockInterval);
   const tick = () => {
@@ -1121,7 +1223,7 @@ function startClock() {
     document.getElementById('clock-display').textContent = `지금 ${fmtTime(now.getHours(), now.getMinutes())}`;
     document.getElementById('date-display').textContent =
       now.toLocaleDateString('ko-KR', {month:'long', day:'numeric', weekday:'long'});
-    document.getElementById('countdown-display').textContent = untilText(S.alarmTime);
+    document.getElementById('countdown-display').textContent = untilText(S.alarmTime, alarmDays());
   };
   tick();
   S.clockInterval = setInterval(tick, 1000);
@@ -1130,21 +1232,22 @@ function startClock() {
 function startAlarmCheck() {
   if (S.alarmCheckInterval) clearInterval(S.alarmCheckInterval);
   let warmedUp = false;
+  // 다음에 울릴 때를 한 번 정해 두고 그때가 되면 울린다 (반복 요일이면 그 요일 중 가장 가까운 날)
+  let target = nextAlarmDate(S.alarmTime, alarmDays());
   S.alarmCheckInterval = setInterval(() => {
     const now = new Date();
-    const [ah, am] = S.alarmTime.split(':').map(Number);
+    if (!target) return;
+    const left = target - now;
+    // PC가 잠자기 등으로 1분 넘게 늦었으면 그 알람은 건너뛰고 다음 번을 기다린다
+    if (left < -60000) { target = nextAlarmDate(S.alarmTime, alarmDays()); warmedUp = false; return; }
     // 알람 2분 전에 AI 모델을 미리 올려 둔다
-    const alarm = new Date(); alarm.setHours(ah, am, 0, 0);
-    const left = alarm - now;
     if (!warmedUp && left > 0 && left <= 120000) {
       warmedUp = true;
       // 예열에 그날 일정과 아침 날씨까지 넣어야 알람 때의 시스템 프롬프트와 같아져 캐시가 재사용된다
       S.weatherPromise = fetchWeather();
       Promise.all([loadTodayCalendar(), S.weatherPromise]).finally(warmupModel);
     }
-    if (now.getHours() === ah && now.getMinutes() === am && now.getSeconds() < 5) {
-      triggerAlarm();
-    }
+    if (left <= 0) triggerAlarm();
   }, 1000);
 }
 
@@ -1262,7 +1365,9 @@ function declineCall() {
     const d = new Date(); d.setMinutes(d.getMinutes() + 5);
     return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
   })();
+  S.snoozed = true;
   document.getElementById('alarm-time-display').textContent = fmtHHMM(S.alarmTime);
+  document.getElementById('alarm-repeat').textContent = '5분 뒤 다시';
   showView('standby');
   startClock();
   if (NATIVE) NATIVE.snooze(5);
@@ -1637,6 +1742,7 @@ function endCall(endedBy = 'button') {
   const talk = sec >= 60 ? `${Math.floor(sec / 60)}분 ${sec % 60}초` : `${sec}초`;
   document.getElementById('done-stats').textContent =
     `통화 ${talk}${activeStepGoal() && S.steps ? ` · ${S.steps}걸음 걸었어요` : ''}`;
+  document.getElementById('btn-done').textContent = (S.repeatDays || []).length ? '확인 · 다음 알람 보기' : '새 알람 맞추기';
   showView('done');
 }
 
@@ -1745,6 +1851,20 @@ function resetApp() {
   Voice.stopSpeaking();
   if (NATIVE) NATIVE.cancelAlarm();
   showView('setup');
+}
+
+// 통화를 마친 뒤: 반복 알람이면 다음 알람이 이미 등록돼 있으므로(AlarmScheduler.onFired) 대기 화면으로 돌아간다.
+// 한 번 알람이면 새로 맞추러 간다
+function afterDone() {
+  if (!(S.repeatDays || []).length) { resetApp(); return; }
+  S.alarmTime = localStorage.getItem('mc_time') || S.alarmTime;  // 스누즈로 바뀐 시각을 원래대로
+  S.snoozed = false;
+  localStorage.removeItem('mc_snooze_count');
+  document.getElementById('alarm-time-display').textContent = fmtHHMM(S.alarmTime);
+  document.getElementById('alarm-repeat').textContent = repeatLabel(S.repeatDays);
+  showView('standby');
+  startClock();
+  if (!NATIVE) startAlarmCheck();
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────

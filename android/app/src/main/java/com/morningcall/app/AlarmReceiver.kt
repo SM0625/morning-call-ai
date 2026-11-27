@@ -11,7 +11,7 @@ import android.content.Intent
 /** 알람 시각에 실행된다. 벨을 울리고, 잠금화면 위에 전화 화면(MainActivity)을 띄운다. */
 class AlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        AlarmScheduler.clearSaved(context)
+        AlarmScheduler.onFired(context)  // 반복 알람이면 다음 번을 등록
         Ringer.start(context)
         AlarmNotification.show(context)
         // 앱이 이미 화면에 떠 있으면 바로 전화 화면으로 전환 (백그라운드에서는 시스템이 막으므로 알림이 대신 띄운다)
